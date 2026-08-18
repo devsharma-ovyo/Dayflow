@@ -1,0 +1,10 @@
+{
+  "name": "Planner",
+  "description": "A macOS-styled personal task management PWA with automatic recurring resets, streak tracking, time-based reminders, and offline support.",
+  "requestFramePermissions": [
+    "notifications"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
