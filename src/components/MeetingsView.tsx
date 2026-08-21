@@ -51,6 +51,7 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
   onAddTask,
 }) => {
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  const [viewMode, setViewMode] = useState<'day' | 'week' | 'all'>('day');
   const [addedTaskIds, setAddedTaskIds] = useState<Set<string>>(new Set());
   const [filterAccountId, setFilterAccountId] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -63,6 +64,14 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
       date.getDate() === today.getDate() &&
       date.getMonth() === today.getMonth() &&
       date.getFullYear() === today.getFullYear()
+    );
+  };
+
+  const isSameDay = (d1: Date, d2: Date) => {
+    return (
+      d1.getDate() === d2.getDate() &&
+      d1.getMonth() === d2.getMonth() &&
+      d1.getFullYear() === d2.getFullYear()
     );
   };
 
@@ -82,11 +91,29 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
     setSelectedDate(new Date());
   };
 
+  // Generate 7-day strip around selected date
+  const generateWeekDays = () => {
+    const days: Date[] = [];
+    const current = new Date(selectedDate);
+    const dayOfWeek = current.getDay(); // 0 is Sunday
+    const startOfWeek = new Date(current);
+    startOfWeek.setDate(current.getDate() - dayOfWeek);
+
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(startOfWeek);
+      d.setDate(startOfWeek.getDate() + i);
+      days.push(d);
+    }
+    return days;
+  };
+
+  const weekDays = generateWeekDays();
+
   // Get meetings for the selected date
   const dayMeetings = getMeetingsForDate(meetings, selectedDate);
 
-  // Filtered by account & search
-  const filteredMeetings = dayMeetings.filter((m) => {
+  // Filter all meetings by account & search query
+  const allFilteredMeetings = meetings.filter((m) => {
     if (filterAccountId !== 'all' && m.accountId !== filterAccountId) return false;
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
@@ -99,16 +126,71 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
     return true;
   });
 
+  // Filtered day meetings
+  const filteredDayMeetings = dayMeetings.filter((m) => {
+    if (filterAccountId !== 'all' && m.accountId !== filterAccountId) return false;
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      const matchTitle = m.title.toLowerCase().includes(q);
+      const matchDesc = (m.description || '').toLowerCase().includes(q);
+      const matchOrg = (m.organizer || '').toLowerCase().includes(q);
+      const matchLoc = (m.location || '').toLowerCase().includes(q);
+      if (!matchTitle && !matchDesc && !matchOrg && !matchLoc) return false;
+    }
+    return true;
+  });
+
+  // Unique days with meetings
+  const uniqueDatesWithMeetings = new Set(
+    meetings.map((m) => {
+      const d = new Date(m.start);
+      return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    })
+  );
+
+  // Group all meetings by date string for "All Schedule" view
+  const groupedMeetingsByDate = React.useMemo(() => {
+    const groups: { dateKey: string; date: Date; items: OutlookMeeting[] }[] = [];
+    const map = new Map<string, { date: Date; items: OutlookMeeting[] }>();
+
+    for (const m of allFilteredMeetings) {
+      const d = new Date(m.start);
+      const key = `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`;
+      if (!map.has(key)) {
+        map.set(key, {
+          date: new Date(d.getFullYear(), d.getMonth(), d.getDate()),
+          items: [],
+        });
+      }
+      map.get(key)!.items.push(m);
+    }
+
+    // Sort dates chronologically
+    const sortedKeys = Array.from(map.keys()).sort();
+    for (const key of sortedKeys) {
+      const val = map.get(key)!;
+      groups.push({
+        dateKey: key,
+        date: val.date,
+        items: val.items.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()),
+      });
+    }
+
+    return groups;
+  }, [allFilteredMeetings]);
+
   // Calculate meeting stats for this day
-  const totalCount = dayMeetings.length;
+  const totalTodayCount = getMeetingsForDate(meetings, new Date()).length;
+  const totalDayCount = dayMeetings.length;
   
   // Counts per account
   const accountStats = accounts.map((acc) => {
-    const count = dayMeetings.filter((m) => m.accountId === acc.id).length;
-    return { ...acc, count };
+    const count = meetings.filter((m) => m.accountId === acc.id).length;
+    const dayCount = dayMeetings.filter((m) => m.accountId === acc.id).length;
+    return { ...acc, count, dayCount };
   });
 
-  // Total scheduled duration in minutes
+  // Total scheduled duration in minutes for day
   const totalDurationMinutes = dayMeetings.reduce((acc, m) => {
     const start = new Date(m.start).getTime();
     const end = new Date(m.end).getTime();
@@ -181,13 +263,132 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
         );
 
         saveStoredOutlookMeetings(combined);
-        onImportMeetings(combined, `Imported ${parsed.length} meetings from ${file.name}`);
-        setUploadStatus(`Imported ${parsed.length} meetings from ${file.name}`);
-        setTimeout(() => setUploadStatus(null), 4000);
+        const countToday = getMeetingsForDate(parsed, new Date()).length;
+        const msg = `Successfully imported ${parsed.length} meetings from ${file.name}! (${countToday} scheduled for today, ${parsed.length - countToday} on other dates)`;
+        onImportMeetings(combined, msg);
+        setUploadStatus(msg);
+        setTimeout(() => setUploadStatus(null), 6000);
       }
     };
     reader.readAsText(file);
     if (e.target) e.target.value = '';
+  };
+
+  const renderMeetingCard = (meeting: OutlookMeeting) => {
+    const isAdded = addedTaskIds.has(meeting.id);
+    const isTeams = meeting.meetingUrl?.includes('teams.microsoft.com');
+    const isZoom = meeting.meetingUrl?.includes('zoom.us');
+    const isMeet = meeting.meetingUrl?.includes('meet.google.com');
+
+    return (
+      <div
+        key={meeting.id}
+        className="p-4 rounded-xl border border-neutral-200/80 dark:border-neutral-800 bg-white dark:bg-neutral-900 shadow-2xs hover:shadow-xs transition-shadow space-y-3"
+      >
+        {/* Meeting Header */}
+        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* Account Badge */}
+              <span
+                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold ${
+                  meeting.accountColor === 'sky'
+                    ? 'bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20'
+                    : meeting.accountColor === 'indigo'
+                    ? 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20'
+                    : 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20'
+                }`}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full bg-${meeting.accountColor}-500`} />
+                <span>{meeting.accountName}</span>
+              </span>
+
+              {/* Time Tag */}
+              <span className="text-xs font-mono font-medium text-neutral-700 dark:text-neutral-300 flex items-center gap-1">
+                <Clock className="w-3 h-3 text-neutral-400" />
+                <span>{formatMeetingTime(meeting.start, meeting.end, meeting.allDay)}</span>
+              </span>
+
+              {/* Duration Tag */}
+              <span className="text-[10px] text-neutral-400 bg-neutral-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded">
+                {getMeetingDuration(meeting.start, meeting.end, meeting.allDay)}
+              </span>
+            </div>
+
+            <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 pt-0.5">
+              {meeting.title}
+            </h3>
+          </div>
+
+          {/* Quick Actions (Join Call & Add to DayFlow) */}
+          <div className="flex items-center gap-1.5 shrink-0 self-start">
+            {meeting.meetingUrl && (
+              <a
+                href={meeting.meetingUrl}
+                target="_blank"
+                rel="noreferrer"
+                className={`px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1 text-white transition-all shadow-2xs active:scale-95 ${
+                  isTeams
+                    ? 'bg-[#5059C9] hover:bg-[#434baf]'
+                    : isZoom
+                    ? 'bg-[#2D8CFF] hover:bg-[#2277db]'
+                    : 'bg-emerald-600 hover:bg-emerald-700'
+                }`}
+              >
+                <Video className="w-3.5 h-3.5" />
+                <span>{isTeams ? 'Join Teams' : isZoom ? 'Join Zoom' : 'Join Call'}</span>
+                <ExternalLink className="w-3 h-3 opacity-75" />
+              </a>
+            )}
+
+            <button
+              onClick={() => handleConvertToTask(meeting)}
+              disabled={isAdded}
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1 transition-all cursor-pointer ${
+                isAdded
+                  ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20'
+                  : 'bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-200'
+              }`}
+              title="Convert this meeting into a time-blocked task in DayFlow"
+            >
+              {isAdded ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" /> : <Plus className="w-3.5 h-3.5" />}
+              <span>{isAdded ? 'Added to Tasks' : 'Add to Tasks'}</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Location, Organizer, Attendees */}
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-neutral-500 dark:text-neutral-400 pt-1 border-t border-neutral-100 dark:border-neutral-800/60">
+          {meeting.location && (
+            <div className="flex items-center gap-1">
+              <MapPin className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+              <span className="truncate max-w-xs">{meeting.location}</span>
+            </div>
+          )}
+
+          {meeting.organizer && (
+            <div className="flex items-center gap-1">
+              <User className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+              <span>Organizer: <strong className="font-medium text-neutral-700 dark:text-neutral-300">{meeting.organizer}</strong></span>
+            </div>
+          )}
+
+          {meeting.attendees && meeting.attendees.length > 0 && (
+            <div className="flex items-center gap-1">
+              <Users className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+              <span>{meeting.attendees.length} Attendees</span>
+            </div>
+          )}
+        </div>
+
+        {/* Agenda / Description Preview */}
+        {meeting.description && (
+          <p className="text-[11px] text-neutral-600 dark:text-neutral-400 line-clamp-2 bg-neutral-50 dark:bg-neutral-800/40 p-2 rounded-lg font-sans leading-relaxed">
+            {meeting.description}
+          </p>
+        )}
+      </div>
+    );
   };
 
   return (
@@ -203,48 +404,90 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
 
       {/* Top Header & Daily Overview Banner */}
       <div className="p-5 rounded-2xl bg-white dark:bg-neutral-900 border border-neutral-200/80 dark:border-neutral-800 shadow-xs space-y-4">
-        {/* Date Selector Navigation & Controls */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-neutral-100 dark:border-neutral-800/80">
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handlePrevDay}
-              className="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
-              title="Previous Day"
-            >
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-
-            <div className="flex items-center gap-2">
-              <h2 className="text-base font-semibold text-neutral-900 dark:text-neutral-100">
-                {selectedDate.toLocaleDateString([], {
-                  weekday: 'long',
-                  month: 'short',
-                  day: 'numeric',
-                  year: selectedDate.getFullYear() !== now.getFullYear() ? 'numeric' : undefined,
-                })}
-              </h2>
-              {isToday(selectedDate) && (
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20">
-                  Today
+        {/* Top Controls Bar */}
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-neutral-100 dark:border-neutral-800/80">
+          {/* Date Selector & Mode Tabs */}
+          <div className="flex items-center flex-wrap gap-2.5">
+            {/* View Mode Toggle */}
+            <div className="flex items-center p-1 rounded-xl bg-neutral-100 dark:bg-neutral-800/70 border border-neutral-200/80 dark:border-neutral-700/60 text-xs font-medium">
+              <button
+                onClick={() => setViewMode('day')}
+                className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
+                  viewMode === 'day'
+                    ? 'bg-white dark:bg-neutral-900 text-neutral-900 dark:text-white shadow-2xs font-semibold'
+                    : 'text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200'
+                }`}
+              >
+                Day View
+              </button>
+              <button
+                onClick={() => setViewMode('week')}
+                className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
+                  viewMode === 'week'
+                    ? 'bg-white dark:bg-neutral-900 text-neutral-900 dark:text-white shadow-2xs font-semibold'
+                    : 'text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200'
+                }`}
+              >
+                Week View
+              </button>
+              <button
+                onClick={() => setViewMode('all')}
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-lg transition-all cursor-pointer ${
+                  viewMode === 'all'
+                    ? 'bg-white dark:bg-neutral-900 text-sky-600 dark:text-sky-400 shadow-2xs font-semibold'
+                    : 'text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200'
+                }`}
+              >
+                <span>All Schedule</span>
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-sky-500/10 text-sky-600 dark:text-sky-400 font-mono">
+                  {meetings.length}
                 </span>
-              )}
+              </button>
             </div>
 
-            <button
-              onClick={handleNextDay}
-              className="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
-              title="Next Day"
-            >
-              <ChevronRight className="w-4 h-4" />
-            </button>
+            {/* Date Navigation for Day / Week modes */}
+            {viewMode !== 'all' && (
+              <div className="flex items-center gap-1.5 bg-neutral-50 dark:bg-neutral-800/40 p-1 rounded-xl border border-neutral-200/60 dark:border-neutral-800">
+                <button
+                  onClick={handlePrevDay}
+                  className="p-1 rounded-lg text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100 hover:bg-neutral-200/50 dark:hover:bg-neutral-700 transition-colors cursor-pointer"
+                  title="Previous Day"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
 
-            {!isToday(selectedDate) && (
-              <button
-                onClick={handleToday}
-                className="ml-1 text-xs font-medium text-sky-500 hover:text-sky-600 underline"
-              >
-                Jump to Today
-              </button>
+                <div className="flex items-center gap-1.5 px-1.5">
+                  <span className="text-xs font-semibold text-neutral-900 dark:text-neutral-100 whitespace-nowrap">
+                    {selectedDate.toLocaleDateString([], {
+                      weekday: 'short',
+                      month: 'short',
+                      day: 'numeric',
+                    })}
+                  </span>
+                  {isToday(selectedDate) && (
+                    <span className="px-1.5 py-0.2 rounded-md text-[9px] font-bold bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20">
+                      Today
+                    </span>
+                  )}
+                </div>
+
+                <button
+                  onClick={handleNextDay}
+                  className="p-1 rounded-lg text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100 hover:bg-neutral-200/50 dark:hover:bg-neutral-700 transition-colors cursor-pointer"
+                  title="Next Day"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+
+                {!isToday(selectedDate) && (
+                  <button
+                    onClick={handleToday}
+                    className="px-2 py-0.5 text-[11px] font-medium text-sky-600 dark:text-sky-400 hover:underline cursor-pointer"
+                  >
+                    Today
+                  </button>
+                )}
+              </div>
             )}
           </div>
 
@@ -279,25 +522,82 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
         </div>
 
         {uploadStatus && (
-          <div className="p-2.5 rounded-xl bg-sky-500/10 border border-sky-500/20 text-xs text-sky-700 dark:text-sky-300 flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 shrink-0 text-sky-500" />
-            <span>{uploadStatus}</span>
+          <div className="p-3 rounded-xl bg-sky-500/10 border border-sky-500/20 text-xs text-sky-700 dark:text-sky-300 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 shrink-0 text-sky-500" />
+              <span>{uploadStatus}</span>
+            </div>
+            {viewMode !== 'all' && (
+              <button
+                onClick={() => setViewMode('all')}
+                className="text-xs font-semibold text-sky-600 dark:text-sky-400 underline hover:opacity-80 shrink-0 cursor-pointer"
+              >
+                View All {meetings.length} Meetings
+              </button>
+            )}
           </div>
         )}
 
-        {/* Prominent Daily Meeting Count & Account Breakdown Stats */}
+        {/* 7-Day Interactive Date Ribbon */}
+        {viewMode !== 'all' && (
+          <div className="grid grid-cols-7 gap-1.5 pt-1">
+            {weekDays.map((d) => {
+              const isSel = isSameDay(d, selectedDate);
+              const isTod = isToday(d);
+              const dayCount = getMeetingsForDate(meetings, d).length;
+
+              return (
+                <button
+                  key={d.toISOString()}
+                  onClick={() => setSelectedDate(d)}
+                  className={`flex flex-col items-center justify-center p-2 rounded-xl border transition-all cursor-pointer ${
+                    isSel
+                      ? 'bg-sky-500 text-white border-sky-600 shadow-xs'
+                      : isTod
+                      ? 'bg-sky-500/10 dark:bg-sky-500/20 border-sky-500/30 text-sky-600 dark:text-sky-400 hover:bg-sky-500/20'
+                      : 'bg-neutral-50 dark:bg-neutral-800/40 border-neutral-200/60 dark:border-neutral-800 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800'
+                  }`}
+                >
+                  <span className={`text-[10px] font-medium uppercase ${isSel ? 'text-white/80' : 'text-neutral-400'}`}>
+                    {d.toLocaleDateString([], { weekday: 'narrow' })}
+                  </span>
+                  <span className={`text-sm font-bold mt-0.5 ${isSel ? 'text-white' : ''}`}>
+                    {d.getDate()}
+                  </span>
+                  <div className="mt-1 h-3 flex items-center justify-center">
+                    {dayCount > 0 ? (
+                      <span
+                        className={`px-1.5 py-0.2 rounded-full text-[9px] font-bold ${
+                          isSel
+                            ? 'bg-white text-sky-600'
+                            : 'bg-sky-500/20 text-sky-600 dark:text-sky-400'
+                        }`}
+                      >
+                        {dayCount}
+                      </span>
+                    ) : (
+                      <span className="w-1 h-1 rounded-full bg-neutral-300 dark:bg-neutral-700 opacity-40" />
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Prominent Meeting Count & Calendar Breakdown Stats */}
         <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 pt-1">
           {/* Total Meetings Count */}
           <div className="p-3.5 rounded-xl bg-linear-to-br from-sky-500/10 via-sky-500/5 to-indigo-500/10 border border-sky-500/20 flex flex-col justify-between">
             <span className="text-[11px] font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">
-              Meetings Today
+              {viewMode === 'day' ? 'Meetings Selected Day' : 'Total In Calendar'}
             </span>
             <div className="flex items-baseline gap-2 mt-1">
               <span className="text-2xl font-bold text-neutral-900 dark:text-white font-mono">
-                {totalCount}
+                {viewMode === 'day' ? totalDayCount : meetings.length}
               </span>
               <span className="text-xs text-neutral-500 dark:text-neutral-400">
-                {totalCount === 1 ? 'meeting scheduled' : 'meetings scheduled'}
+                {viewMode === 'day' ? `(${meetings.length} total across all dates)` : `across ${uniqueDatesWithMeetings.size} days`}
               </span>
             </div>
           </div>
@@ -312,9 +612,11 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
             </div>
             <div className="flex items-baseline gap-1.5 mt-1">
               <span className="text-xl font-bold text-neutral-900 dark:text-white font-mono">
-                {accountStats[0]?.count || 0}
+                {viewMode === 'day' ? accountStats[0]?.dayCount || 0 : accountStats[0]?.count || 0}
               </span>
-              <span className="text-xs text-neutral-500">meetings</span>
+              <span className="text-xs text-neutral-500">
+                {viewMode === 'day' ? `today (${accountStats[0]?.count || 0} total)` : 'events'}
+              </span>
             </div>
           </div>
 
@@ -328,22 +630,26 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
             </div>
             <div className="flex items-baseline gap-1.5 mt-1">
               <span className="text-xl font-bold text-neutral-900 dark:text-white font-mono">
-                {accountStats[1]?.count || 0}
+                {viewMode === 'day' ? accountStats[1]?.dayCount || 0 : accountStats[1]?.count || 0}
               </span>
-              <span className="text-xs text-neutral-500">meetings</span>
+              <span className="text-xs text-neutral-500">
+                {viewMode === 'day' ? `today (${accountStats[1]?.count || 0} total)` : 'events'}
+              </span>
             </div>
           </div>
 
-          {/* Total Duration Time */}
+          {/* Today's Total Duration Time */}
           <div className="p-3.5 rounded-xl bg-neutral-50 dark:bg-neutral-800/50 border border-neutral-200 dark:border-neutral-800 flex flex-col justify-between">
             <span className="text-[11px] font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">
-              Total Time Block
+              {viewMode === 'day' ? 'Day Time Block' : 'Today Schedule'}
             </span>
             <div className="flex items-baseline gap-1.5 mt-1">
               <span className="text-xl font-bold text-neutral-900 dark:text-white font-mono">
-                {totalDurationMinutes > 0 ? formattedDuration : '0m'}
+                {viewMode === 'day' ? (totalDurationMinutes > 0 ? formattedDuration : '0m') : `${totalTodayCount} today`}
               </span>
-              <span className="text-xs text-neutral-500">in calls</span>
+              <span className="text-xs text-neutral-500">
+                {viewMode === 'day' ? 'in calls' : 'scheduled'}
+              </span>
             </div>
           </div>
         </div>
@@ -360,7 +666,7 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
                   <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.2 bg-emerald-500 text-white rounded">
                     Next Up
                   </span>
-                  <span className="text-xs font-semibold text-neutral-900 dark:text-white">
+                  <span className="text-xs font-semibold text-neutral-900 dark:text-neutral-100">
                     {currentOrNextMeeting.title}
                   </span>
                 </div>
@@ -398,11 +704,13 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
                 : 'text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100'
             }`}
           >
-            All Accounts ({totalCount})
+            All Accounts ({viewMode === 'day' ? totalDayCount : meetings.length})
           </button>
 
           {accounts.map((acc) => {
-            const count = dayMeetings.filter((m) => m.accountId === acc.id).length;
+            const count = viewMode === 'day'
+              ? dayMeetings.filter((m) => m.accountId === acc.id).length
+              : meetings.filter((m) => m.accountId === acc.id).length;
             return (
               <button
                 key={acc.id}
@@ -426,167 +734,208 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
           type="text"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Filter meetings by title, organizer..."
+          placeholder="Filter meetings by title, organizer, agenda..."
           className="px-3 py-1.5 rounded-xl text-xs bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-hidden focus:ring-1 focus:ring-sky-500 shadow-2xs"
         />
       </div>
 
-      {/* Meeting Timeline / List */}
-      {filteredMeetings.length === 0 ? (
-        <div className="flex flex-col items-center justify-center p-12 text-center rounded-2xl border border-dashed border-neutral-300 dark:border-neutral-800 bg-white/40 dark:bg-neutral-900/40 backdrop-blur-xs">
-          <div className="w-12 h-12 rounded-2xl bg-sky-500/10 text-sky-500 flex items-center justify-center mb-3">
-            <CalendarCheck className="w-6 h-6" />
-          </div>
-          <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-            {searchQuery ? 'No matching meetings found' : 'No Meetings Scheduled for this Day'}
-          </h3>
-          <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 max-w-sm">
-            {accounts.every((a) => !a.feedUrl.trim())
-              ? 'Connect your 2 Outlook accounts or reload sample pre-loaded meetings to preview DayFlow.'
-              : 'Your calendar is completely open. Focus on deep work or tasks!'}
-          </p>
-          <div className="flex items-center gap-2 mt-4">
+      {/* VIEW MODE: ALL SCHEDULE (FULL LIST GROUPED BY DATE) */}
+      {viewMode === 'all' && (
+        <div className="space-y-6">
+          <div className="flex items-center justify-between text-xs text-neutral-500 dark:text-neutral-400 px-1">
+            <span>Showing all <strong>{allFilteredMeetings.length}</strong> meetings across your calendar</span>
             <button
-              onClick={() => {
-                const sample = generateSampleDemoMeetings();
-                saveStoredOutlookMeetings(sample);
-                onImportMeetings(sample, 'Loaded sample Outlook meetings');
-              }}
-              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-800 dark:text-neutral-200 transition-all shadow-2xs active:scale-95 cursor-pointer"
+              onClick={() => setViewMode('day')}
+              className="text-sky-500 hover:underline font-medium cursor-pointer"
             >
-              <Sparkles className="w-3.5 h-3.5 text-sky-500" />
-              <span>Load Sample Meetings</span>
+              Switch to Day View &rarr;
             </button>
+          </div>
 
-            {accounts.every((a) => !a.feedUrl.trim()) && (
-              <button
-                onClick={onOpenAccountsModal}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-sky-500 hover:bg-sky-600 text-white shadow-xs active:scale-95 transition-all cursor-pointer"
-              >
-                <Settings className="w-4 h-4" />
-                <span>Connect Outlook</span>
-              </button>
-            )}
+          {groupedMeetingsByDate.length === 0 ? (
+            <div className="flex flex-col items-center justify-center p-12 text-center rounded-2xl border border-dashed border-neutral-300 dark:border-neutral-800 bg-white/40 dark:bg-neutral-900/40 backdrop-blur-xs">
+              <CalendarCheck className="w-8 h-8 text-sky-500 mb-2" />
+              <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+                No meetings found
+              </h3>
+              <p className="text-xs text-neutral-500 mt-1">
+                Try clearing your search query or uploading another .ics file.
+              </p>
+            </div>
+          ) : (
+            groupedMeetingsByDate.map((group) => {
+              const isTod = isToday(group.date);
+
+              return (
+                <div key={group.dateKey} className="space-y-3">
+                  {/* Date Header */}
+                  <div className="flex items-center justify-between py-1 border-b border-neutral-200 dark:border-neutral-800">
+                    <div className="flex items-center gap-2">
+                      <span className={`text-xs font-bold ${isTod ? 'text-sky-600 dark:text-sky-400' : 'text-neutral-800 dark:text-neutral-200'}`}>
+                        {group.date.toLocaleDateString([], {
+                          weekday: 'long',
+                          month: 'short',
+                          day: 'numeric',
+                          year: group.date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined,
+                        })}
+                      </span>
+                      {isTod && (
+                        <span className="px-1.5 py-0.2 rounded-md text-[9px] font-bold bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20">
+                          Today
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-[11px] text-neutral-400">
+                      {group.items.length} {group.items.length === 1 ? 'event' : 'events'}
+                    </span>
+                  </div>
+
+                  {/* Meetings in this date */}
+                  <div className="space-y-3">
+                    {group.items.map(renderMeetingCard)}
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+
+      {/* VIEW MODE: WEEK VIEW */}
+      {viewMode === 'week' && (
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-7 gap-3">
+            {weekDays.map((d) => {
+              const isTod = isToday(d);
+              const isSel = isSameDay(d, selectedDate);
+              const mList = getMeetingsForDate(allFilteredMeetings, d);
+
+              return (
+                <div
+                  key={d.toISOString()}
+                  className={`p-3 rounded-2xl border flex flex-col justify-between min-h-[160px] transition-all ${
+                    isSel
+                      ? 'border-sky-500 ring-1 ring-sky-500 bg-sky-500/5 dark:bg-sky-500/10'
+                      : isTod
+                      ? 'border-sky-500/30 bg-sky-500/5 dark:bg-sky-500/5'
+                      : 'border-neutral-200/80 dark:border-neutral-800 bg-white dark:bg-neutral-900'
+                  }`}
+                >
+                  <div>
+                    <div className="flex items-center justify-between pb-2 border-b border-neutral-100 dark:border-neutral-800">
+                      <div>
+                        <span className="text-[10px] font-bold uppercase text-neutral-400">
+                          {d.toLocaleDateString([], { weekday: 'short' })}
+                        </span>
+                        <h4 className="text-sm font-bold text-neutral-900 dark:text-white">
+                          {d.getDate()}
+                        </h4>
+                      </div>
+                      {mList.length > 0 && (
+                        <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-sky-500/10 text-sky-600 dark:text-sky-400">
+                          {mList.length}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="mt-2 space-y-1.5">
+                      {mList.length === 0 ? (
+                        <span className="text-[11px] text-neutral-400 italic block py-2">Open</span>
+                      ) : (
+                        mList.slice(0, 3).map((m) => (
+                          <div
+                            key={m.id}
+                            className="p-1.5 rounded-lg bg-neutral-100 dark:bg-neutral-800/80 text-[11px] truncate border-l-2 border-sky-500"
+                            title={`${m.title} (${formatMeetingTime(m.start, m.end, m.allDay)})`}
+                          >
+                            <span className="font-semibold text-neutral-900 dark:text-white block truncate">{m.title}</span>
+                            <span className="text-[10px] text-neutral-500 font-mono">{formatMeetingTime(m.start, m.end, m.allDay)}</span>
+                          </div>
+                        ))
+                      )}
+                      {mList.length > 3 && (
+                        <span className="text-[10px] text-sky-500 font-medium block text-center">
+                          +{mList.length - 3} more
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => {
+                      setSelectedDate(d);
+                      setViewMode('day');
+                    }}
+                    className="mt-3 text-[10px] font-semibold text-sky-600 dark:text-sky-400 hover:underline text-center w-full cursor-pointer"
+                  >
+                    View Day &rarr;
+                  </button>
+                </div>
+              );
+            })}
           </div>
         </div>
-      ) : (
-        <div className="space-y-3">
-          {filteredMeetings.map((meeting) => {
-            const isAdded = addedTaskIds.has(meeting.id);
-            const isTeams = meeting.meetingUrl?.includes('teams.microsoft.com');
-            const isZoom = meeting.meetingUrl?.includes('zoom.us');
-            const isMeet = meeting.meetingUrl?.includes('meet.google.com');
+      )}
 
-            return (
-              <div
-                key={meeting.id}
-                className="p-4 rounded-xl border border-neutral-200/80 dark:border-neutral-800 bg-white dark:bg-neutral-900 shadow-2xs hover:shadow-xs transition-shadow space-y-3"
+      {/* VIEW MODE: DAY VIEW (DEFAULT) */}
+      {viewMode === 'day' && (
+        <div className="space-y-4">
+          {/* Subtle Tip if there are more meetings on other dates */}
+          {meetings.length > dayMeetings.length && (
+            <div className="flex items-center justify-between p-2.5 rounded-xl bg-neutral-100/70 dark:bg-neutral-800/50 border border-neutral-200/60 dark:border-neutral-700/50 text-xs text-neutral-600 dark:text-neutral-300">
+              <span>
+                Showing <strong>{filteredDayMeetings.length}</strong> {filteredDayMeetings.length === 1 ? 'meeting' : 'meetings'} for {isToday(selectedDate) ? 'today' : selectedDate.toLocaleDateString([], { month: 'short', day: 'numeric' })} (<strong>{meetings.length}</strong> total meetings in calendar).
+              </span>
+              <button
+                onClick={() => setViewMode('all')}
+                className="text-sky-600 dark:text-sky-400 font-semibold underline hover:opacity-80 shrink-0 ml-2 cursor-pointer"
               >
-                {/* Meeting Header */}
-                <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2">
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      {/* Account Badge */}
-                      <span
-                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold ${
-                          meeting.accountColor === 'sky'
-                            ? 'bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20'
-                            : meeting.accountColor === 'indigo'
-                            ? 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20'
-                            : 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20'
-                        }`}
-                      >
-                        <span className={`w-1.5 h-1.5 rounded-full bg-${meeting.accountColor}-500`} />
-                        <span>{meeting.accountName}</span>
-                      </span>
+                Show All Schedule
+              </button>
+            </div>
+          )}
 
-                      {/* Time Tag */}
-                      <span className="text-xs font-mono font-medium text-neutral-700 dark:text-neutral-300 flex items-center gap-1">
-                        <Clock className="w-3 h-3 text-neutral-400" />
-                        <span>{formatMeetingTime(meeting.start, meeting.end, meeting.allDay)}</span>
-                      </span>
-
-                      {/* Duration Tag */}
-                      <span className="text-[10px] text-neutral-400 bg-neutral-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded">
-                        {getMeetingDuration(meeting.start, meeting.end, meeting.allDay)}
-                      </span>
-                    </div>
-
-                    <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100 pt-0.5">
-                      {meeting.title}
-                    </h3>
-                  </div>
-
-                  {/* Quick Actions (Join Call & Add to DayFlow) */}
-                  <div className="flex items-center gap-1.5 shrink-0 self-start">
-                    {meeting.meetingUrl && (
-                      <a
-                        href={meeting.meetingUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className={`px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1 text-white transition-all shadow-2xs active:scale-95 ${
-                          isTeams
-                            ? 'bg-[#5059C9] hover:bg-[#434baf]'
-                            : isZoom
-                            ? 'bg-[#2D8CFF] hover:bg-[#2277db]'
-                            : 'bg-emerald-600 hover:bg-emerald-700'
-                        }`}
-                      >
-                        <Video className="w-3.5 h-3.5" />
-                        <span>{isTeams ? 'Join Teams' : isZoom ? 'Join Zoom' : 'Join Call'}</span>
-                        <ExternalLink className="w-3 h-3 opacity-75" />
-                      </a>
-                    )}
-
-                    <button
-                      onClick={() => handleConvertToTask(meeting)}
-                      disabled={isAdded}
-                      className={`px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1 transition-all ${
-                        isAdded
-                          ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20'
-                          : 'bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-200'
-                      }`}
-                      title="Convert this meeting into a time-blocked task in DayFlow"
-                    >
-                      {isAdded ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" /> : <Plus className="w-3.5 h-3.5" />}
-                      <span>{isAdded ? 'Added to Tasks' : 'Add to Tasks'}</span>
-                    </button>
-                  </div>
-                </div>
-
-                {/* Location, Organizer, Attendees */}
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-neutral-500 dark:text-neutral-400 pt-1 border-t border-neutral-100 dark:border-neutral-800/60">
-                  {meeting.location && (
-                    <div className="flex items-center gap-1">
-                      <MapPin className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
-                      <span className="truncate max-w-xs">{meeting.location}</span>
-                    </div>
-                  )}
-
-                  {meeting.organizer && (
-                    <div className="flex items-center gap-1">
-                      <User className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
-                      <span>Organizer: <strong className="font-medium text-neutral-700 dark:text-neutral-300">{meeting.organizer}</strong></span>
-                    </div>
-                  )}
-
-                  {meeting.attendees && meeting.attendees.length > 0 && (
-                    <div className="flex items-center gap-1">
-                      <Users className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
-                      <span>{meeting.attendees.length} Attendees</span>
-                    </div>
-                  )}
-                </div>
-
-                {/* Agenda / Description Preview */}
-                {meeting.description && (
-                  <p className="text-[11px] text-neutral-600 dark:text-neutral-400 line-clamp-2 bg-neutral-50 dark:bg-neutral-800/40 p-2 rounded-lg font-sans leading-relaxed">
-                    {meeting.description}
-                  </p>
+          {filteredDayMeetings.length === 0 ? (
+            <div className="flex flex-col items-center justify-center p-12 text-center rounded-2xl border border-dashed border-neutral-300 dark:border-neutral-800 bg-white/40 dark:bg-neutral-900/40 backdrop-blur-xs">
+              <div className="w-12 h-12 rounded-2xl bg-sky-500/10 text-sky-500 flex items-center justify-center mb-3">
+                <CalendarCheck className="w-6 h-6" />
+              </div>
+              <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+                {searchQuery ? 'No matching meetings found' : 'No Meetings Scheduled for this Day'}
+              </h3>
+              <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 max-w-sm">
+                {meetings.length > 0
+                  ? `You have ${meetings.length} meetings scheduled on other dates in your calendar.`
+                  : 'Connect your 2 Outlook accounts or reload sample pre-loaded meetings to preview DayFlow.'}
+              </p>
+              <div className="flex items-center gap-2 mt-4">
+                {meetings.length > 0 ? (
+                  <button
+                    onClick={() => setViewMode('all')}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-sky-500 hover:bg-sky-600 text-white shadow-xs active:scale-95 transition-all cursor-pointer"
+                  >
+                    <span>View All {meetings.length} Meetings</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => {
+                      const sample = generateSampleDemoMeetings();
+                      saveStoredOutlookMeetings(sample);
+                      onImportMeetings(sample, 'Loaded sample Outlook meetings');
+                    }}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-800 dark:text-neutral-200 transition-all shadow-2xs active:scale-95 cursor-pointer"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-sky-500" />
+                    <span>Load Sample Meetings</span>
+                  </button>
                 )}
               </div>
-            );
-          })}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {filteredDayMeetings.map(renderMeetingCard)}
+            </div>
+          )}
         </div>
       )}
     </div>
