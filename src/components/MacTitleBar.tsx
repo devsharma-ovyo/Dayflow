@@ -13,7 +13,8 @@ import {
   Archive,
   Plus,
   Cloud,
-  FolderSync
+  FolderSync,
+  Calendar
 } from 'lucide-react';
 import { AppSettings, Task } from '../types';
 
@@ -32,6 +33,8 @@ interface MacTitleBarProps {
   onInstallApp: () => void;
   isStandalone: boolean;
   tasks: Task[];
+  meetingsTodayCount?: number;
+  onOpenMeetingsView?: () => void;
 }
 
 export const MacTitleBar: React.FC<MacTitleBarProps> = ({
@@ -48,7 +51,9 @@ export const MacTitleBar: React.FC<MacTitleBarProps> = ({
   installPromptAvailable,
   onInstallApp,
   isStandalone,
-  tasks
+  tasks,
+  meetingsTodayCount = 0,
+  onOpenMeetingsView
 }) => {
   const activeRecurringTasks = tasks.filter(t => (t.type === 'recurring' || (t.type as string) === 'daily') && !t.archived);
   const totalStreakDays = activeRecurringTasks.reduce((acc, t) => acc + (t.streak || 0), 0);
@@ -76,8 +81,8 @@ export const MacTitleBar: React.FC<MacTitleBarProps> = ({
         </div>
       </div>
 
-      {/* Center: Quick Streak & Completion Status Indicator */}
-      <div className="hidden md:flex items-center gap-3">
+      {/* Center: Quick Streak, Completion & Meetings Indicator */}
+      <div className="hidden md:flex items-center gap-2.5">
         <button
           id="quick-streaks-trigger"
           onClick={onOpenStreaksModal}
@@ -88,8 +93,20 @@ export const MacTitleBar: React.FC<MacTitleBarProps> = ({
           <span>{totalStreakDays} streak total</span>
         </button>
 
+        {meetingsTodayCount > 0 && onOpenMeetingsView && (
+          <button
+            id="quick-meetings-trigger"
+            onClick={onOpenMeetingsView}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20 hover:bg-sky-500/20 transition-all cursor-pointer"
+            title="View Today's Outlook Meetings"
+          >
+            <Calendar className="w-3.5 h-3.5 text-sky-500" />
+            <span>{meetingsTodayCount} {meetingsTodayCount === 1 ? 'meeting' : 'meetings'} today</span>
+          </button>
+        )}
+
         <div className="text-xs text-neutral-500 dark:text-neutral-400 font-medium">
-          {completedTodayCount} of {totalActiveCount} done today
+          {completedTodayCount} of {totalActiveCount} done
         </div>
       </div>
 
