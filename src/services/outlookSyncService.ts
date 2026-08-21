@@ -47,7 +47,7 @@ export function extractMeetingUrl(text: string): string | undefined {
 }
 
 // Parse ICS date string into standard Date object
-function parseIcsDate(raw: string): { date: Date; allDay: boolean } {
+export function parseIcsDate(raw: string): { date: Date; allDay: boolean } {
   if (!raw) return { date: new Date(), allDay: false };
 
   // Remove parameters if present (e.g. VALUE=DATE:20260821 or TZID="India Standard Time":20260821T140000)
@@ -61,31 +61,34 @@ function parseIcsDate(raw: string): { date: Date; allDay: boolean } {
     return { date: new Date(year, month, day, 0, 0, 0), allDay: true };
   }
 
-  // Case 2: UTC date-time (YYYYMMDDTHHMMSSZ)
-  if (/^\d{8}T\d{6}Z$/i.test(dateStr)) {
-    const year = parseInt(dateStr.slice(0, 4), 10);
-    const month = parseInt(dateStr.slice(4, 6), 10) - 1;
-    const day = parseInt(dateStr.slice(6, 8), 10);
-    const hour = parseInt(dateStr.slice(9, 11), 10);
-    const min = parseInt(dateStr.slice(11, 13), 10);
-    const sec = parseInt(dateStr.slice(13, 15), 10);
-    return { date: new Date(Date.UTC(year, month, day, hour, min, sec)), allDay: false };
+  // Case 2: UTC date-time (YYYYMMDDTHHMMSSZ or YYYYMMDDTHHMMZ)
+  const utcMatch = dateStr.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})?Z$/i);
+  if (utcMatch) {
+    const [, y, m, d, h, min, s] = utcMatch;
+    return {
+      date: new Date(Date.UTC(+y, +m - 1, +d, +h, +min, +(s || 0))),
+      allDay: false,
+    };
   }
 
-  // Case 3: Local date-time without Z (YYYYMMDDTHHMMSS)
-  if (/^\d{8}T\d{6}$/i.test(dateStr)) {
-    const year = parseInt(dateStr.slice(0, 4), 10);
-    const month = parseInt(dateStr.slice(4, 6), 10) - 1;
-    const day = parseInt(dateStr.slice(6, 8), 10);
-    const hour = parseInt(dateStr.slice(9, 11), 10);
-    const min = parseInt(dateStr.slice(11, 13), 10);
-    const sec = parseInt(dateStr.slice(13, 15), 10);
-    return { date: new Date(year, month, day, hour, min, sec), allDay: false };
+  // Case 3: Local date-time without Z (YYYYMMDDTHHMMSS or YYYYMMDDTHHMM)
+  const localMatch = dateStr.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})?$/i);
+  if (localMatch) {
+    const [, y, m, d, h, min, s] = localMatch;
+    return {
+      date: new Date(+y, +m - 1, +d, +h, +min, +(s || 0)),
+      allDay: false,
+    };
   }
 
-  // Fallback ISO or standard date string
+  // Case 4: ISO or standard date string format (e.g. 2026-08-21T14:00:00Z)
   const fallback = new Date(dateStr);
-  return { date: isNaN(fallback.getTime()) ? new Date() : fallback, allDay: false };
+  if (!isNaN(fallback.getTime())) {
+    const isAllDay = dateStr.length <= 10 && !dateStr.includes('T');
+    return { date: fallback, allDay: isAllDay };
+  }
+
+  return { date: new Date(), allDay: false };
 }
 
 // Clean and unescape ICS text values
@@ -100,8 +103,58 @@ function unescapeIcsText(str: string): string {
 }
 
 /**
+ * Split an ICS property line into key, parameters, and value
+ * Safely handles colons inside parameter quotes (e.g. TZID="(UTC+05:30) New Delhi")
+ */
+function splitIcsProperty(line: string): { key: string; params: string; val: string } | null {
+  let inQuotes = false;
+  let colonIdx = -1;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+    } else if (ch === ':' && !inQuotes) {
+      colonIdx = i;
+      break;
+    }
+  }
+  if (colonIdx === -1) return null;
+  const rawKeyPart = line.substring(0, colonIdx);
+  const val = line.substring(colonIdx + 1);
+
+  const semiIdx = rawKeyPart.indexOf(';');
+  let key = rawKeyPart;
+  let params = '';
+  if (semiIdx !== -1) {
+    key = rawKeyPart.substring(0, semiIdx);
+    params = rawKeyPart.substring(semiIdx + 1);
+  }
+  return {
+    key: key.toUpperCase().trim(),
+    params,
+    val: val.trim(),
+  };
+}
+
+/**
+ * Checks if a meeting is an unwanted demo/dummy meeting
+ */
+export function isDummyDemoMeeting(meeting: OutlookMeeting): boolean {
+  if (!meeting) return false;
+  const uid = meeting.uid || '';
+  const id = meeting.id || '';
+  if (uid.startsWith('uid-work-') || uid.startsWith('uid-personal-')) return true;
+  if (id === 'work-1' || id === 'work-2' || id === 'personal-1' || id === 'personal-2') return true;
+  if (meeting.title === 'Engineering & Product Daily Sync' && meeting.organizer === 'Sarah Chen (Lead Engineer)') return true;
+  if (meeting.title === 'Quarterly Roadmap & Architecture Review' && meeting.organizer === 'David Miller (VP Engineering)') return true;
+  if (meeting.title === 'Wellness & Physical Therapy Session' && meeting.organizer === 'Dr. Emily Vance') return true;
+  if (meeting.title === 'Portfolio Strategy & Investment Review' && meeting.organizer === 'Marcus Reed (Financial Advisor)') return true;
+  return false;
+}
+
+/**
  * Parses raw ICS (iCalendar) text into typed OutlookMeeting objects,
- * including expansion of recurring series for recent/upcoming days.
+ * ensuring EVERY event is extracted and expanded without drops.
  */
 export function parseICS(
   icsContent: string,
@@ -112,7 +165,7 @@ export function parseICS(
   const meetings: OutlookMeeting[] = [];
   if (!icsContent || !icsContent.includes('BEGIN:')) return meetings;
 
-  // Unfold folded lines (RFC 5545: lines starting with space or tab continue the previous line)
+  // Unfold folded lines (RFC 5545: CRLF or LF followed by single space or tab)
   const unfolded = icsContent
     .replace(/\r\n[ \t]/g, '')
     .replace(/\n[ \t]/g, '')
@@ -120,6 +173,7 @@ export function parseICS(
   const lines = unfolded.split(/\r\n|\n|\r/);
 
   let inEvent = false;
+  let eventCounter = 0;
   let currentEvent: Partial<OutlookMeeting> & { 
     dtstartRaw?: string; 
     dtendRaw?: string;
@@ -127,31 +181,34 @@ export function parseICS(
   } = {};
 
   const today = new Date();
-  const pastWindow = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
-  const futureWindow = new Date(today.getTime() + 90 * 24 * 60 * 60 * 1000);
+  const pastWindow = new Date(today.getTime() - 60 * 24 * 60 * 60 * 1000);
+  const futureWindow = new Date(today.getTime() + 180 * 24 * 60 * 60 * 1000);
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
+    const rawLine = lines[i];
+    const line = rawLine.trim();
     if (!line) continue;
 
-    if (line.toUpperCase() === 'BEGIN:VEVENT') {
+    const upperLine = line.toUpperCase();
+
+    if (upperLine === 'BEGIN:VEVENT' || upperLine.startsWith('BEGIN:VEVENT')) {
       inEvent = true;
+      eventCounter++;
       currentEvent = {
         accountId,
         accountName,
         accountColor,
         status: 'confirmed',
-        attendees: []
+        attendees: [],
       };
       continue;
     }
 
-    if (line.toUpperCase() === 'END:VEVENT') {
-      inEvent = false;
-      if (currentEvent.dtstartRaw) {
+    if (upperLine === 'END:VEVENT' || upperLine.startsWith('END:VEVENT')) {
+      if (inEvent && currentEvent.dtstartRaw) {
         const { date: startDate, allDay } = parseIcsDate(currentEvent.dtstartRaw);
         let endDate = startDate;
-        let durationMs = 30 * 60 * 1000;
+        let durationMs = allDay ? 24 * 60 * 60 * 1000 : 30 * 60 * 1000;
         if (currentEvent.dtendRaw) {
           endDate = parseIcsDate(currentEvent.dtendRaw).date;
           durationMs = Math.max(0, endDate.getTime() - startDate.getTime());
@@ -163,11 +220,14 @@ export function parseICS(
         const rawLoc = currentEvent.location || '';
         const detectedUrl = currentEvent.meetingUrl || extractMeetingUrl(rawNotes) || extractMeetingUrl(rawLoc);
         const baseTitle = currentEvent.title || 'Untitled Meeting';
-        const baseUid = currentEvent.uid || Math.random().toString(36).slice(2);
+        const baseUid = currentEvent.uid || `evt-${eventCounter}-${startDate.getTime()}`;
+
+        // Unique ID for this specific event occurrence (never collide with master series UID)
+        const eventId = `${accountId}-${baseUid}-${startDate.getTime()}-${eventCounter}`;
 
         // Add base event
         meetings.push({
-          id: `${accountId}-${baseUid}`,
+          id: eventId,
           uid: baseUid,
           accountId,
           accountName,
@@ -181,7 +241,7 @@ export function parseICS(
           allDay,
           organizer: currentEvent.organizer,
           attendees: currentEvent.attendees,
-          status: currentEvent.status || 'confirmed'
+          status: currentEvent.status || 'confirmed',
         });
 
         // Expand recurring rules (RRULE) for weekly/daily/monthly events
@@ -198,14 +258,13 @@ export function parseICS(
           const maxTargetDate = untilDate < futureWindow ? untilDate : futureWindow;
 
           if (rruleUpper.includes('FREQ=DAILY')) {
-            // Repeat daily for up to 60 occurrences
-            for (let d = 1; d <= 60; d += interval) {
+            for (let d = 1; d <= 90; d += interval) {
               const occStart = new Date(startDate.getTime() + d * 24 * 60 * 60 * 1000);
               const occEnd = new Date(occStart.getTime() + durationMs);
               if (occStart > maxTargetDate) break;
               if (occStart >= pastWindow && occStart <= futureWindow) {
                 meetings.push({
-                  id: `${accountId}-${baseUid}-daily-${d}`,
+                  id: `${accountId}-${baseUid}-daily-${d}-${occStart.getTime()}`,
                   uid: `${baseUid}-daily-${d}`,
                   accountId,
                   accountName,
@@ -219,31 +278,28 @@ export function parseICS(
                   allDay,
                   organizer: currentEvent.organizer,
                   attendees: currentEvent.attendees,
-                  status: currentEvent.status || 'confirmed'
+                  status: currentEvent.status || 'confirmed',
                 });
               }
             }
           } else if (rruleUpper.includes('FREQ=WEEKLY')) {
-            // Check if BYDAY is specified (e.g. BYDAY=MO,TU,WE,TH,FR)
             const byDayMatch = rruleUpper.match(/BYDAY=([^;]+)/);
             if (byDayMatch) {
               const dayCodes: Record<string, number> = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
               const targetDays = byDayMatch[1].split(',').map((d) => dayCodes[d.trim()]).filter((d) => d !== undefined);
 
-              // Generate for next 12 weeks
-              for (let w = 0; w <= 12; w += interval) {
+              for (let w = 0; w <= 16; w += interval) {
                 for (const targetDay of targetDays) {
                   const weekStart = new Date(startDate.getTime() + w * 7 * 24 * 60 * 60 * 1000);
                   const dayDiff = targetDay - weekStart.getDay();
                   const occStart = new Date(weekStart.getTime() + dayDiff * 24 * 60 * 60 * 1000);
-                  // preserve start hours/minutes
                   occStart.setHours(startDate.getHours(), startDate.getMinutes(), startDate.getSeconds());
                   const occEnd = new Date(occStart.getTime() + durationMs);
 
                   if (occStart > maxTargetDate) continue;
                   if (occStart >= pastWindow && occStart <= futureWindow && occStart.getTime() !== startDate.getTime()) {
                     meetings.push({
-                      id: `${accountId}-${baseUid}-w${w}-d${targetDay}`,
+                      id: `${accountId}-${baseUid}-w${w}-d${targetDay}-${occStart.getTime()}`,
                       uid: `${baseUid}-w${w}-d${targetDay}`,
                       accountId,
                       accountName,
@@ -257,20 +313,19 @@ export function parseICS(
                       allDay,
                       organizer: currentEvent.organizer,
                       attendees: currentEvent.attendees,
-                      status: currentEvent.status || 'confirmed'
+                      status: currentEvent.status || 'confirmed',
                     });
                   }
                 }
               }
             } else {
-              // Standard weekly repeat
-              for (let w = 1; w <= 12; w += interval) {
+              for (let w = 1; w <= 16; w += interval) {
                 const occStart = new Date(startDate.getTime() + w * 7 * 24 * 60 * 60 * 1000);
                 const occEnd = new Date(occStart.getTime() + durationMs);
                 if (occStart > maxTargetDate) break;
                 if (occStart >= pastWindow && occStart <= futureWindow) {
                   meetings.push({
-                    id: `${accountId}-${baseUid}-wk-${w}`,
+                    id: `${accountId}-${baseUid}-wk-${w}-${occStart.getTime()}`,
                     uid: `${baseUid}-wk-${w}`,
                     accountId,
                     accountName,
@@ -284,13 +339,12 @@ export function parseICS(
                     allDay,
                     organizer: currentEvent.organizer,
                     attendees: currentEvent.attendees,
-                    status: currentEvent.status || 'confirmed'
+                    status: currentEvent.status || 'confirmed',
                   });
                 }
               }
             }
           } else if (rruleUpper.includes('FREQ=MONTHLY')) {
-            // Monthly recurrence
             for (let m = 1; m <= 6; m += interval) {
               const occStart = new Date(startDate);
               occStart.setMonth(occStart.getMonth() + m);
@@ -298,7 +352,7 @@ export function parseICS(
               if (occStart > maxTargetDate) break;
               if (occStart >= pastWindow && occStart <= futureWindow) {
                 meetings.push({
-                  id: `${accountId}-${baseUid}-mo-${m}`,
+                  id: `${accountId}-${baseUid}-mo-${m}-${occStart.getTime()}`,
                   uid: `${baseUid}-mo-${m}`,
                   accountId,
                   accountName,
@@ -312,43 +366,42 @@ export function parseICS(
                   allDay,
                   organizer: currentEvent.organizer,
                   attendees: currentEvent.attendees,
-                  status: currentEvent.status || 'confirmed'
+                  status: currentEvent.status || 'confirmed',
                 });
               }
             }
           }
         }
       }
+      inEvent = false;
       currentEvent = {};
       continue;
     }
 
     if (inEvent) {
-      const colonIdx = line.indexOf(':');
-      if (colonIdx === -1) continue;
+      const prop = splitIcsProperty(line);
+      if (!prop) continue;
 
-      const keyPart = line.slice(0, colonIdx);
-      const valPart = line.slice(colonIdx + 1);
-      const keyName = keyPart.split(';')[0].toUpperCase().trim();
+      const { key, val } = prop;
 
-      switch (keyName) {
+      switch (key) {
         case 'UID':
-          currentEvent.uid = valPart.trim();
+          currentEvent.uid = val;
           break;
         case 'SUMMARY':
-          currentEvent.title = unescapeIcsText(valPart);
+          currentEvent.title = unescapeIcsText(val);
           break;
         case 'DESCRIPTION':
-          currentEvent.description = unescapeIcsText(valPart);
+          currentEvent.description = unescapeIcsText(val);
           break;
         case 'LOCATION':
-          currentEvent.location = unescapeIcsText(valPart);
+          currentEvent.location = unescapeIcsText(val);
           break;
         case 'URL':
-          currentEvent.meetingUrl = valPart.trim();
+          currentEvent.meetingUrl = val;
           break;
         case 'RRULE':
-          currentEvent.rrule = valPart.trim();
+          currentEvent.rrule = val;
           break;
         case 'DTSTART':
           currentEvent.dtstartRaw = line;
@@ -357,17 +410,17 @@ export function parseICS(
           currentEvent.dtendRaw = line;
           break;
         case 'ORGANIZER':
-          const orgMatch = valPart.match(/CN=([^;:]+)/i) || valPart.match(/mailto:([^\s;]+)/i);
-          currentEvent.organizer = orgMatch ? orgMatch[1].replace(/["']/g, '') : unescapeIcsText(valPart);
+          const orgMatch = val.match(/CN=([^;:]+)/i) || val.match(/mailto:([^\s;]+)/i);
+          currentEvent.organizer = orgMatch ? orgMatch[1].replace(/["']/g, '') : unescapeIcsText(val);
           break;
         case 'STATUS':
-          const st = valPart.toLowerCase();
+          const st = val.toLowerCase();
           if (st.includes('tentative')) currentEvent.status = 'tentative';
           else if (st.includes('cancel')) currentEvent.status = 'cancelled';
           else currentEvent.status = 'confirmed';
           break;
         case 'ATTENDEE':
-          const attMatch = valPart.match(/CN=([^;:]+)/i) || valPart.match(/mailto:([^\s;]+)/i);
+          const attMatch = val.match(/CN=([^;:]+)/i) || val.match(/mailto:([^\s;]+)/i);
           if (attMatch && attMatch[1]) {
             currentEvent.attendees = [...(currentEvent.attendees || []), attMatch[1].replace(/["']/g, '')];
           }
@@ -376,11 +429,16 @@ export function parseICS(
     }
   }
 
-  // Deduplicate and Sort chronologically
+  // Deduplicate by composite key: accountId + lower-case title + start timestamp
+  // This guarantees that meetings with identical UID across series/dates are NOT deleted!
   const uniqueMap = new Map<string, OutlookMeeting>();
   for (const m of meetings) {
-    uniqueMap.set(m.id, m);
+    const dedupKey = `${m.accountId}__${m.title.trim().toLowerCase()}__${m.start}`;
+    if (!uniqueMap.has(dedupKey)) {
+      uniqueMap.set(dedupKey, m);
+    }
   }
+
   return Array.from(uniqueMap.values()).sort(
     (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
   );
@@ -415,27 +473,35 @@ export function getStoredOutlookMeetings(): OutlookMeeting[] {
   try {
     const raw = localStorage.getItem(OUTLOOK_MEETINGS_STORAGE_KEY);
     if (!raw) {
-      const demo = generateSampleDemoMeetings();
-      saveStoredOutlookMeetings(demo);
-      return demo;
+      return [];
     }
     const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed) && parsed.length > 0) {
-      return parsed;
+    if (Array.isArray(parsed)) {
+      // Filter out any unwanted dummy/demo meetings
+      const realMeetings = parsed.filter((m) => !isDummyDemoMeeting(m));
+      return realMeetings;
     }
   } catch (err) {
     console.warn('Failed to read outlook meetings from storage:', err);
   }
-  const demo = generateSampleDemoMeetings();
-  saveStoredOutlookMeetings(demo);
-  return demo;
+  return [];
 }
 
 export function saveStoredOutlookMeetings(meetings: OutlookMeeting[]): void {
   try {
-    localStorage.setItem(OUTLOOK_MEETINGS_STORAGE_KEY, JSON.stringify(meetings));
+    // Ensure no dummy meetings are saved
+    const cleanMeetings = (meetings || []).filter((m) => !isDummyDemoMeeting(m));
+    localStorage.setItem(OUTLOOK_MEETINGS_STORAGE_KEY, JSON.stringify(cleanMeetings));
   } catch (err) {
     console.warn('Failed to save outlook meetings to storage:', err);
+  }
+}
+
+export function clearStoredOutlookMeetings(): void {
+  try {
+    localStorage.removeItem(OUTLOOK_MEETINGS_STORAGE_KEY);
+  } catch (err) {
+    console.warn('Failed to clear stored outlook meetings:', err);
   }
 }
 
@@ -531,17 +597,20 @@ export async function syncAllOutlookAccounts(
     }
   }
 
-  // Deduplicate meetings
+  // Deduplicate by composite key: accountId + title + start time
   const uniqueMap = new Map<string, OutlookMeeting>();
-  allMeetings.forEach((m) => uniqueMap.set(`${m.accountId}-${m.uid}`, m));
+  for (const m of allMeetings) {
+    const dedupKey = `${m.accountId}__${m.title.trim().toLowerCase()}__${m.start}`;
+    if (!uniqueMap.has(dedupKey)) {
+      uniqueMap.set(dedupKey, m);
+    }
+  }
   const mergedMeetings = Array.from(uniqueMap.values()).sort(
     (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
   );
 
   saveStoredOutlookAccounts(updatedAccounts);
-  if (mergedMeetings.length > 0) {
-    saveStoredOutlookMeetings(mergedMeetings);
-  }
+  saveStoredOutlookMeetings(mergedMeetings);
 
   return { meetings: mergedMeetings, updatedAccounts };
 }
