@@ -118,6 +118,23 @@ export const OutlookAccountsModal: React.FC<OutlookAccountsModalProps> = ({
   const handleSaveAndSync = async () => {
     setIsSaving(true);
     onUpdateAccounts(editingAccounts);
+    
+    // Update account names & colors on already stored meetings
+    const currentStored = getStoredOutlookMeetings();
+    const updatedMeetings = currentStored.map((m) => {
+      const matchAcc = editingAccounts.find((a) => a.id === m.accountId);
+      if (matchAcc) {
+        return {
+          ...m,
+          accountName: matchAcc.name,
+          accountColor: matchAcc.color,
+        };
+      }
+      return m;
+    });
+    saveStoredOutlookMeetings(updatedMeetings);
+    onImportMeetings(updatedMeetings);
+
     await onRefreshMeetings();
     setIsSaving(false);
     onClose();
@@ -284,15 +301,26 @@ export const OutlookAccountsModal: React.FC<OutlookAccountsModalProps> = ({
                   {/* Account Name & Color */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                     <div>
-                      <label className="text-[11px] font-medium text-neutral-600 dark:text-neutral-400 block mb-1">
-                        Label / Name
-                      </label>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-[11px] font-medium text-neutral-600 dark:text-neutral-400">
+                          Account Name / Label
+                        </label>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => handleAccountChange(account.id, { name: index === 0 ? 'Work Outlook' : 'Personal Outlook' })}
+                            className="text-[10px] text-sky-500 hover:underline cursor-pointer"
+                          >
+                            Reset
+                          </button>
+                        </div>
+                      </div>
                       <input
                         type="text"
                         value={account.name}
                         onChange={(e) => handleAccountChange(account.id, { name: e.target.value })}
-                        placeholder="e.g. Work Outlook or Personal Outlook"
-                        className="w-full px-3 py-1.5 rounded-lg text-xs bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 text-neutral-900 dark:text-white focus:outline-hidden focus:ring-1 focus:ring-sky-500"
+                        placeholder={index === 0 ? "e.g. Work, Microsoft Corp, Client Team" : "e.g. Personal, Family, Freelance"}
+                        className="w-full px-3 py-1.5 rounded-lg text-xs bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 text-neutral-900 dark:text-white focus:outline-hidden focus:ring-1 focus:ring-sky-500 font-medium"
                       />
                     </div>
 
