@@ -32,8 +32,38 @@ export interface Task {
   skippedWeek?: string; // ISO week string when skipped (e.g. "2026-W33")
 }
 
-export type ViewFilter = 'all' | 'recurring' | 'weekly' | 'one-time' | 'archive' | 'daily';
+export type ViewFilter = 'all' | 'recurring' | 'weekly' | 'one-time' | 'archive' | 'daily' | 'meetings';
 export type PriorityFilter = 'all' | 'high' | 'medium' | 'low';
+
+export interface OutlookAccountConfig {
+  id: string;
+  name: string; // e.g. "Work Outlook" or "Personal Outlook"
+  color: 'sky' | 'indigo' | 'purple' | 'emerald' | 'amber' | 'rose';
+  feedUrl: string; // webcal:// or https:// ICS url
+  enabled: boolean;
+  lastSynced: number | null;
+  lastError: string | null;
+  meetingCount?: number;
+}
+
+export interface OutlookMeeting {
+  id: string;
+  uid: string;
+  accountId: string;
+  accountName: string;
+  accountColor: string;
+  title: string;
+  description?: string;
+  location?: string;
+  meetingUrl?: string; // Microsoft Teams, Zoom, Google Meet, Webex link
+  start: string; // ISO string
+  end: string; // ISO string
+  allDay: boolean;
+  organizer?: string;
+  attendees?: string[];
+  status?: 'confirmed' | 'tentative' | 'cancelled';
+  convertedToTaskId?: string;
+}
 
 export interface AppSettings {
   theme: 'system' | 'light' | 'dark';
