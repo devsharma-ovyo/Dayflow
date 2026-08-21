@@ -12,7 +12,8 @@ import {
   Flame, 
   Archive,
   Plus,
-  Cloud
+  Cloud,
+  FolderSync
 } from 'lucide-react';
 import { AppSettings, Task } from '../types';
 
@@ -105,9 +106,9 @@ export const MacTitleBar: React.FC<MacTitleBarProps> = ({
           }`}
           title={currentSyncCode ? `Cloud Sync Active: ${currentSyncCode}` : 'Sync with iPhone / Mac'}
         >
-          <Cloud className={`w-3.5 h-3.5 ${currentSyncCode ? 'text-emerald-500' : 'text-neutral-500'}`} />
+          <FolderSync className={`w-3.5 h-3.5 ${currentSyncCode ? 'text-emerald-500' : 'text-neutral-500'}`} />
           <span className="hidden sm:inline">
-            {currentSyncCode ? currentSyncCode : 'Cloud Sync'}
+            {currentSyncCode ? currentSyncCode : 'iCloud / Sync'}
           </span>
           {currentSyncCode && (
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
