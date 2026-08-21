@@ -248,6 +248,16 @@ export default function App() {
     saveStoredOutlookAccounts(newAccs);
   };
 
+  const handleImportMeetings = (newMeetings: OutlookMeeting[], msg?: string) => {
+    setOutlookMeetings(newMeetings);
+    saveStoredOutlookMeetings(newMeetings);
+    const todayCount = getMeetingsForDate(newMeetings, new Date()).length;
+    setLiveToast({
+      title: 'Meetings Updated',
+      message: msg || `Loaded ${newMeetings.length} meetings. ${todayCount} scheduled for today.`,
+    });
+  };
+
   // Add task from Meeting conversion
   const handleAddMeetingTask = (newTask: Task) => {
     setTasks((prev) => [newTask, ...prev]);
@@ -769,6 +779,7 @@ export default function App() {
             accounts={outlookAccounts}
             onOpenAccountsModal={() => setIsOutlookAccountsModalOpen(true)}
             onRefreshMeetings={handleRefreshOutlookMeetings}
+            onImportMeetings={handleImportMeetings}
             isSyncing={isSyncingOutlook}
             onAddTask={handleAddMeetingTask}
           />
@@ -936,6 +947,7 @@ export default function App() {
         accounts={outlookAccounts}
         onUpdateAccounts={handleUpdateOutlookAccounts}
         onRefreshMeetings={handleRefreshOutlookMeetings}
+        onImportMeetings={handleImportMeetings}
       />
     </div>
   );
