@@ -100,21 +100,21 @@ export const CloudSyncModal: React.FC<CloudSyncModalProps> = ({
     try {
       // Pull remote state
       const remote = await pullFromCloud(formatted);
-      if (remote && remote.tasks) {
-        // Merge or replace
+      if (remote && remote.tasks && remote.tasks.length > 0) {
+        // Apply remote tasks to local device
         onApplyRemoteState(remote.tasks, remote.settings);
         setStoredSyncCode(formatted);
         onSyncCodeChange(formatted);
-        setLastSyncedTime(Date.now());
-        setSyncSuccessMsg('Connected successfully! Tasks synced with cloud.');
+        setLastSyncedTime(remote.updatedAt || Date.now());
+        setSyncSuccessMsg(`Connected! ${remote.tasks.length} tasks imported from cloud.`);
         setActiveTab('status');
       } else {
-        // Code is brand new, let's push our current tasks to it
+        // If remote has no tasks yet, push local tasks to cloud
         await pushToCloud(formatted, tasks, settings);
         setStoredSyncCode(formatted);
         onSyncCodeChange(formatted);
         setLastSyncedTime(Date.now());
-        setSyncSuccessMsg('Connected! Current tasks saved to your new sync code.');
+        setSyncSuccessMsg('Connected! Local tasks uploaded to sync room.');
         setActiveTab('status');
       }
     } catch {
