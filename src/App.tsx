@@ -11,9 +11,10 @@ import {
   Flame, 
   Archive,
   ArrowUpDown,
-  BellRing
+  BellRing,
+  Video
 } from 'lucide-react';
-import { Task, TaskType, TaskPriority, ViewFilter, AppSettings } from './types';
+import { Task, TaskType, TaskPriority, ViewFilter, AppSettings, OutlookAccountConfig, OutlookMeeting } from './types';
 import { 
   loadTasksFromStorage, 
   saveTasksToStorage, 
@@ -37,12 +38,22 @@ import { StreakStatsModal } from './components/StreakStatsModal';
 import { HistoryArchiveView } from './components/HistoryArchiveView';
 import { PwaLimitationsModal } from './components/PwaLimitationsModal';
 import { CloudSyncModal } from './components/CloudSyncModal';
+import { MeetingsView } from './components/MeetingsView';
+import { OutlookAccountsModal } from './components/OutlookAccountsModal';
 import { 
   parseLaunchShortcutData, 
   getIsHourlySyncEnabled, 
   getStoredICloudSyncTime, 
   setStoredICloudSyncTime 
 } from './services/icloudSyncService';
+import {
+  getStoredOutlookAccounts,
+  saveStoredOutlookAccounts,
+  getStoredOutlookMeetings,
+  saveStoredOutlookMeetings,
+  syncAllOutlookAccounts,
+  getMeetingsForDate
+} from './services/outlookSyncService';
 
 export default function App() {
   // State initialization
@@ -54,6 +65,12 @@ export default function App() {
   const [priorityFilter, setPriorityFilter] = useState<TaskPriority | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   
+  // Outlook Accounts & Meetings State (Dual Account Support)
+  const [outlookAccounts, setOutlookAccounts] = useState<OutlookAccountConfig[]>(() => getStoredOutlookAccounts());
+  const [outlookMeetings, setOutlookMeetings] = useState<OutlookMeeting[]>(() => getStoredOutlookMeetings());
+  const [isOutlookAccountsModalOpen, setIsOutlookAccountsModalOpen] = useState(false);
+  const [isSyncingOutlook, setIsSyncingOutlook] = useState(false);
+
   // Modals state
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
@@ -138,20 +155,31 @@ export default function App() {
     return () => window.removeEventListener('hashchange', handleLaunchSync);
   }, []);
 
-  // Automated Hourly iCloud Sync Check (checks every hour or on tab re-focus if 1hr passed)
+  // Automated Hourly iCloud & Outlook Sync Check (checks every hour or on tab re-focus if 1hr passed)
   useEffect(() => {
     const checkHourlySync = () => {
-      if (!getIsHourlySyncEnabled()) return;
-      const lastSync = getStoredICloudSyncTime() || 0;
-      const now = Date.now();
-      const oneHourMs = 60 * 60 * 1000;
+      if (getIsHourlySyncEnabled()) {
+        const lastSync = getStoredICloudSyncTime() || 0;
+        const now = Date.now();
+        const oneHourMs = 60 * 60 * 1000;
 
-      // If at least 1 hour has elapsed since last sync snapshot
-      if (now - lastSync >= oneHourMs) {
-        setStoredICloudSyncTime(now);
-        setLiveToast({
-          title: 'Hourly iCloud Sync Ready',
-          message: 'Your tasks are ready for hourly iCloud backup synchronization.'
+        if (now - lastSync >= oneHourMs) {
+          setStoredICloudSyncTime(now);
+          setLiveToast({
+            title: 'Hourly iCloud Sync Ready',
+            message: 'Your tasks are ready for hourly iCloud backup synchronization.'
+          });
+        }
+      }
+
+      // Auto-sync Outlook calendars if any feed URLs are configured
+      const hasConfiguredOutlook = outlookAccounts.some((a) => a.enabled && a.feedUrl.trim());
+      if (hasConfiguredOutlook && !isSyncingOutlook) {
+        syncAllOutlookAccounts(outlookAccounts).then(({ meetings, updatedAccounts }) => {
+          setOutlookAccounts(updatedAccounts);
+          if (meetings.length > 0) {
+            setOutlookMeetings(meetings);
+          }
         });
       }
     };
@@ -166,7 +194,73 @@ export default function App() {
       clearInterval(hourlyInterval);
       window.removeEventListener('focus', checkHourlySync);
     };
+  }, [outlookAccounts, isSyncingOutlook]);
+
+  // Initial auto-sync of Outlook calendars on launch if configured
+  useEffect(() => {
+    const hasConfigured = outlookAccounts.some((a) => a.enabled && a.feedUrl.trim());
+    if (hasConfigured) {
+      setIsSyncingOutlook(true);
+      syncAllOutlookAccounts(outlookAccounts)
+        .then(({ meetings, updatedAccounts }) => {
+          setOutlookAccounts(updatedAccounts);
+          if (meetings.length > 0) {
+            setOutlookMeetings(meetings);
+          }
+        })
+        .finally(() => {
+          setIsSyncingOutlook(false);
+        });
+    }
   }, []);
+
+  // Manual trigger to refresh all Outlook accounts
+  const handleRefreshOutlookMeetings = async () => {
+    setIsSyncingOutlook(true);
+    try {
+      const { meetings, updatedAccounts } = await syncAllOutlookAccounts(outlookAccounts);
+      setOutlookAccounts(updatedAccounts);
+      if (meetings.length > 0) {
+        setOutlookMeetings(meetings);
+        const todayCount = getMeetingsForDate(meetings, new Date()).length;
+        setLiveToast({
+          title: 'Outlook Synced',
+          message: `Updated meetings across accounts. Found ${todayCount} ${todayCount === 1 ? 'meeting' : 'meetings'} today.`,
+        });
+      } else {
+        setLiveToast({
+          title: 'Outlook Synced',
+          message: 'Calendar sync complete.',
+        });
+      }
+    } catch (err: any) {
+      setLiveToast({
+        title: 'Sync Error',
+        message: err.message || 'Could not sync Outlook feeds.',
+      });
+    } finally {
+      setIsSyncingOutlook(false);
+    }
+  };
+
+  const handleUpdateOutlookAccounts = (newAccs: OutlookAccountConfig[]) => {
+    setOutlookAccounts(newAccs);
+    saveStoredOutlookAccounts(newAccs);
+  };
+
+  // Add task from Meeting conversion
+  const handleAddMeetingTask = (newTask: Task) => {
+    setTasks((prev) => [newTask, ...prev]);
+    saveTasksToStorage([newTask, ...tasks]);
+    setLiveToast({
+      title: 'Meeting Added to DayFlow',
+      message: `"${newTask.title}" is now scheduled in your task list.`,
+    });
+  };
+
+  // Calculate today's meetings count
+  const todayMeetings = useMemo(() => getMeetingsForDate(outlookMeetings, new Date()), [outlookMeetings]);
+  const meetingsTodayCount = todayMeetings.length;
 
   // Save tasks to localStorage on change
   useEffect(() => {
@@ -495,6 +589,8 @@ export default function App() {
         onInstallApp={handleInstallApp}
         isStandalone={isStandalone}
         tasks={tasks}
+        meetingsTodayCount={meetingsTodayCount}
+        onOpenMeetingsView={() => setViewFilter('meetings')}
       />
 
       {/* Main Workspace */}
@@ -581,152 +677,191 @@ export default function App() {
                 <span>One-Time</span>
                 <span className="text-[10px] opacity-70">({totalOneTime})</span>
               </button>
+
+              {/* Dedicated Meetings Tab */}
+              <button
+                id="tab-view-meetings"
+                onClick={() => setViewFilter('meetings')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-medium transition-all cursor-pointer whitespace-nowrap ${
+                  viewFilter === 'meetings'
+                    ? 'bg-white dark:bg-neutral-800 text-sky-600 dark:text-sky-400 shadow-xs font-semibold'
+                    : 'text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-100'
+                }`}
+              >
+                <Video className="w-3.5 h-3.5 text-sky-500" />
+                <span>Meetings</span>
+                <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                  viewFilter === 'meetings'
+                    ? 'bg-sky-500 text-white'
+                    : 'bg-sky-500/15 text-sky-600 dark:text-sky-400'
+                }`}>
+                  {meetingsTodayCount}
+                </span>
+              </button>
             </div>
 
-            {/* Quick Priority Filter */}
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1 p-1 rounded-xl bg-neutral-200/70 dark:bg-neutral-900 border border-neutral-300/50 dark:border-neutral-800 text-xs">
-                <span className="text-[10px] font-semibold text-neutral-400 uppercase px-1.5">Priority:</span>
-                {(['all', 'high', 'medium', 'low'] as const).map((p) => (
-                  <button
-                    key={p}
-                    onClick={() => setPriorityFilter(p)}
-                    className={`px-2 py-1 rounded-md capitalize font-medium transition-all cursor-pointer ${
-                      priorityFilter === p
-                        ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 shadow-xs font-semibold'
-                        : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
-                    }`}
-                  >
-                    {p}
-                  </button>
-                ))}
+            {/* Quick Priority Filter (only when viewing tasks) */}
+            {viewFilter !== 'meetings' && (
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1 p-1 rounded-xl bg-neutral-200/70 dark:bg-neutral-900 border border-neutral-300/50 dark:border-neutral-800 text-xs">
+                  <span className="text-[10px] font-semibold text-neutral-400 uppercase px-1.5">Priority:</span>
+                  {(['all', 'high', 'medium', 'low'] as const).map((p) => (
+                    <button
+                      key={p}
+                      onClick={() => setPriorityFilter(p)}
+                      className={`px-2 py-1 rounded-md capitalize font-medium transition-all cursor-pointer ${
+                        priorityFilter === p
+                          ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 shadow-xs font-semibold'
+                          : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
+                      }`}
+                    >
+                      {p}
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
           </div>
 
-          {/* Search Input and Quick Info Bar */}
-          <div className="flex items-center gap-3">
-            <div className="relative flex-1">
-              <Search className="w-4 h-4 text-neutral-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-              <input
-                ref={searchInputRef}
-                id="search-tasks-input"
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search tasks, notes (⌘F)..."
-                className="w-full pl-9 pr-8 py-2 rounded-xl text-xs bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 text-neutral-900 dark:text-neutral-100 placeholder-neutral-400 focus:outline-hidden focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 transition-all shadow-2xs"
-              />
-              {searchQuery && (
-                <button
-                  onClick={() => setSearchQuery('')}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 text-xs"
-                >
-                  ✕
-                </button>
-              )}
-            </div>
+          {/* Search Input and Quick Info Bar (only when viewing tasks) */}
+          {viewFilter !== 'meetings' && (
+            <div className="flex items-center gap-3">
+              <div className="relative flex-1">
+                <Search className="w-4 h-4 text-neutral-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  ref={searchInputRef}
+                  id="search-tasks-input"
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search tasks, notes (⌘F)..."
+                  className="w-full pl-9 pr-8 py-2 rounded-xl text-xs bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 text-neutral-900 dark:text-neutral-100 placeholder-neutral-400 focus:outline-hidden focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 transition-all shadow-2xs"
+                />
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 text-xs"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
 
-            <button
-              id="btn-main-add-task"
-              onClick={() => {
-                setEditingTask(null);
-                setIsTaskModalOpen(true);
-              }}
-              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-sky-500 hover:bg-sky-600 text-white shadow-xs active:scale-95 transition-all cursor-pointer shrink-0"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Add Task</span>
-            </button>
-          </div>
+              <button
+                id="btn-main-add-task"
+                onClick={() => {
+                  setEditingTask(null);
+                  setIsTaskModalOpen(true);
+                }}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-sky-500 hover:bg-sky-600 text-white shadow-xs active:scale-95 transition-all cursor-pointer shrink-0"
+              >
+                <Plus className="w-4 h-4" />
+                <span>New Task</span>
+              </button>
+            </div>
+          )}
         </section>
 
-        {/* Upcoming Reminders Section (Due within 60 mins or Overdue) */}
-        <UpcomingRemindersBar
-          tasks={tasks}
-          onToggleComplete={handleToggleTask}
-          onSelectTask={(task) => {
-            setEditingTask(task);
-            setIsTaskModalOpen(true);
-          }}
-          onOpenLimitationsModal={() => setIsLimitationsModalOpen(true)}
-        />
-
-        {/* Active Tasks Grouped by Priority */}
-        {activeTasks.length === 0 ? (
-          <div
-            id="empty-tasks-placeholder"
-            className="flex flex-col items-center justify-center p-12 text-center rounded-2xl border border-dashed border-neutral-300 dark:border-neutral-800 bg-white/40 dark:bg-neutral-900/40 backdrop-blur-xs my-8"
-          >
-            <div className="w-12 h-12 rounded-2xl bg-sky-500/10 text-sky-500 flex items-center justify-center mb-3">
-              <Sparkles className="w-6 h-6" />
-            </div>
-            <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-              {searchQuery ? 'No matching tasks found' : 'All Clear for Now!'}
-            </h3>
-            <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 max-w-sm">
-              {searchQuery
-                ? 'Try tweaking your search query or reset filters.'
-                : 'Create a new task, set daily habits, or review your completion streaks.'}
-            </p>
-            <button
-              onClick={() => {
-                setEditingTask(null);
-                setIsTaskModalOpen(true);
-              }}
-              className="mt-4 flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-sky-500 hover:bg-sky-600 text-white shadow-xs active:scale-95 transition-all cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Create First Task</span>
-            </button>
-          </div>
+        {/* View Switch: Meetings View vs Regular Tasks */}
+        {viewFilter === 'meetings' ? (
+          <MeetingsView
+            meetings={outlookMeetings}
+            accounts={outlookAccounts}
+            onOpenAccountsModal={() => setIsOutlookAccountsModalOpen(true)}
+            onRefreshMeetings={handleRefreshOutlookMeetings}
+            isSyncing={isSyncingOutlook}
+            onAddTask={handleAddMeetingTask}
+          />
         ) : (
-          <div id="priority-task-sections" className="space-y-2">
-            <TaskGroupSection
-              priority="high"
-              tasks={highPriorityTasks}
+          <>
+            {/* Upcoming Reminders Section (Due within 60 mins or Overdue) */}
+            <UpcomingRemindersBar
+              tasks={tasks}
               onToggleComplete={handleToggleTask}
-              onEdit={(task) => {
+              onSelectTask={(task) => {
                 setEditingTask(task);
                 setIsTaskModalOpen(true);
               }}
-              onDelete={handleDeleteTask}
-              onChangePriority={handleChangePriority}
-              onReorderWithinPriority={handleReorderWithinPriority}
-              onToggleSkipWeek={handleToggleSkipWeek}
-              compactView={settings.compactView}
+              onOpenLimitationsModal={() => setIsLimitationsModalOpen(true)}
             />
 
-            <TaskGroupSection
-              priority="medium"
-              tasks={mediumPriorityTasks}
-              onToggleComplete={handleToggleTask}
-              onEdit={(task) => {
-                setEditingTask(task);
-                setIsTaskModalOpen(true);
-              }}
-              onDelete={handleDeleteTask}
-              onChangePriority={handleChangePriority}
-              onReorderWithinPriority={handleReorderWithinPriority}
-              onToggleSkipWeek={handleToggleSkipWeek}
-              compactView={settings.compactView}
-            />
+            {/* Active Tasks Grouped by Priority */}
+            {activeTasks.length === 0 ? (
+              <div
+                id="empty-tasks-placeholder"
+                className="flex flex-col items-center justify-center p-12 text-center rounded-2xl border border-dashed border-neutral-300 dark:border-neutral-800 bg-white/40 dark:bg-neutral-900/40 backdrop-blur-xs my-8"
+              >
+                <div className="w-12 h-12 rounded-2xl bg-sky-500/10 text-sky-500 flex items-center justify-center mb-3">
+                  <Sparkles className="w-6 h-6" />
+                </div>
+                <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+                  {searchQuery ? 'No matching tasks found' : 'All Clear for Now!'}
+                </h3>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 max-w-sm">
+                  {searchQuery
+                    ? 'Try tweaking your search query or reset filters.'
+                    : 'Create a new task, set daily habits, or review your completion streaks.'}
+                </p>
+                <button
+                  onClick={() => {
+                    setEditingTask(null);
+                    setIsTaskModalOpen(true);
+                  }}
+                  className="mt-4 flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-sky-500 hover:bg-sky-600 text-white shadow-xs active:scale-95 transition-all cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Create First Task</span>
+                </button>
+              </div>
+            ) : (
+              <div id="priority-task-sections" className="space-y-2">
+                <TaskGroupSection
+                  priority="high"
+                  tasks={highPriorityTasks}
+                  onToggleComplete={handleToggleTask}
+                  onEdit={(task) => {
+                    setEditingTask(task);
+                    setIsTaskModalOpen(true);
+                  }}
+                  onDelete={handleDeleteTask}
+                  onChangePriority={handleChangePriority}
+                  onReorderWithinPriority={handleReorderWithinPriority}
+                  onToggleSkipWeek={handleToggleSkipWeek}
+                  compactView={settings.compactView}
+                />
 
-            <TaskGroupSection
-              priority="low"
-              tasks={lowPriorityTasks}
-              onToggleComplete={handleToggleTask}
-              onEdit={(task) => {
-                setEditingTask(task);
-                setIsTaskModalOpen(true);
-              }}
-              onDelete={handleDeleteTask}
-              onChangePriority={handleChangePriority}
-              onReorderWithinPriority={handleReorderWithinPriority}
-              onToggleSkipWeek={handleToggleSkipWeek}
-              compactView={settings.compactView}
-            />
-          </div>
+                <TaskGroupSection
+                  priority="medium"
+                  tasks={mediumPriorityTasks}
+                  onToggleComplete={handleToggleTask}
+                  onEdit={(task) => {
+                    setEditingTask(task);
+                    setIsTaskModalOpen(true);
+                  }}
+                  onDelete={handleDeleteTask}
+                  onChangePriority={handleChangePriority}
+                  onReorderWithinPriority={handleReorderWithinPriority}
+                  onToggleSkipWeek={handleToggleSkipWeek}
+                  compactView={settings.compactView}
+                />
+
+                <TaskGroupSection
+                  priority="low"
+                  tasks={lowPriorityTasks}
+                  onToggleComplete={handleToggleTask}
+                  onEdit={(task) => {
+                    setEditingTask(task);
+                    setIsTaskModalOpen(true);
+                  }}
+                  onDelete={handleDeleteTask}
+                  onChangePriority={handleChangePriority}
+                  onReorderWithinPriority={handleReorderWithinPriority}
+                  onToggleSkipWeek={handleToggleSkipWeek}
+                  compactView={settings.compactView}
+                />
+              </div>
+            )}
+          </>
         )}
 
         {/* Footer info & shortcut legend */}
@@ -734,7 +869,7 @@ export default function App() {
           <div className="flex items-center gap-2">
             <span>DayFlow</span>
             <span>•</span>
-            <span>Recurring tasks reset at 12:00 AM local time on scheduled active days</span>
+            <span>Recurring tasks reset at 12:00 AM local time • Dual Outlook Sync Enabled</span>
           </div>
 
           <div className="flex items-center gap-3 font-mono">
@@ -792,6 +927,15 @@ export default function App() {
             saveSettingsToStorage({ ...settings, ...newSettings });
           }
         }}
+      />
+
+      {/* Outlook Dual Accounts Configuration Modal */}
+      <OutlookAccountsModal
+        isOpen={isOutlookAccountsModalOpen}
+        onClose={() => setIsOutlookAccountsModalOpen(false)}
+        accounts={outlookAccounts}
+        onUpdateAccounts={handleUpdateOutlookAccounts}
+        onRefreshMeetings={handleRefreshOutlookMeetings}
       />
     </div>
   );
