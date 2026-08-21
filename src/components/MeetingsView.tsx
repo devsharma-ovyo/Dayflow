@@ -16,10 +16,10 @@ import {
   ShieldCheck, 
   Laptop, 
   Smartphone,
-  Sparkles,
   CalendarCheck,
   AlertCircle,
-  Upload
+  Upload,
+  Trash2
 } from 'lucide-react';
 import { OutlookAccountConfig, OutlookMeeting, Task } from '../types';
 import { 
@@ -28,7 +28,8 @@ import {
   parseICS, 
   saveStoredOutlookMeetings, 
   getStoredOutlookMeetings,
-  generateSampleDemoMeetings
+  clearStoredOutlookMeetings,
+  isDummyDemoMeeting
 } from '../services/outlookSyncService';
 
 interface MeetingsViewProps {
@@ -56,6 +57,7 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
   const [filterAccountId, setFilterAccountId] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const isToday = (date: Date) => {
@@ -248,17 +250,27 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
     reader.onload = (event) => {
       const icsText = event.target?.result as string;
       if (icsText) {
-        // Default to work-outlook or first account
-        const targetAcc = accounts[0] || { id: 'work-outlook', name: 'Work Outlook', color: 'sky' };
+        // Default to active account or work-outlook
+        const targetAcc = accounts.find((a) => a.enabled) || accounts[0] || { id: 'work-outlook', name: 'Work Outlook', color: 'sky' };
         const parsed = parseICS(icsText, targetAcc.id, targetAcc.name, targetAcc.color);
         if (parsed.length === 0) {
           setUploadStatus(`No meetings found in "${file.name}". Please check the file.`);
           return;
         }
 
-        const currentStored = getStoredOutlookMeetings();
+        // Get stored meetings, filter out any dummy meetings, and merge
+        const currentStored = getStoredOutlookMeetings().filter((m) => !isDummyDemoMeeting(m));
         const otherAcc = currentStored.filter((m) => m.accountId !== targetAcc.id);
-        const combined = [...otherAcc, ...parsed].sort(
+        
+        // Merge without duplicating
+        const uniqueMap = new Map<string, OutlookMeeting>();
+        for (const m of [...otherAcc, ...parsed]) {
+          const dedupKey = `${m.accountId}__${m.title.trim().toLowerCase()}__${m.start}`;
+          if (!uniqueMap.has(dedupKey)) {
+            uniqueMap.set(dedupKey, m);
+          }
+        }
+        const combined = Array.from(uniqueMap.values()).sort(
           (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
         );
 
@@ -267,11 +279,25 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
         const msg = `Successfully imported ${parsed.length} meetings from ${file.name}! (${countToday} scheduled for today, ${parsed.length - countToday} on other dates)`;
         onImportMeetings(combined, msg);
         setUploadStatus(msg);
-        setTimeout(() => setUploadStatus(null), 6000);
+
+        // If no meetings are scheduled for today, switch to all schedule view so all imported meetings are immediately visible
+        if (countToday === 0 && parsed.length > 0) {
+          setViewMode('all');
+        }
+
+        setTimeout(() => setUploadStatus(null), 8000);
       }
     };
     reader.readAsText(file);
     if (e.target) e.target.value = '';
+  };
+
+  const handleClearAll = () => {
+    clearStoredOutlookMeetings();
+    onImportMeetings([], 'Cleared all meetings from calendar.');
+    setShowClearConfirm(false);
+    setUploadStatus('All meetings cleared.');
+    setTimeout(() => setUploadStatus(null), 4000);
   };
 
   const renderMeetingCard = (meeting: OutlookMeeting) => {
@@ -491,7 +517,7 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
             )}
           </div>
 
-          {/* Sync & Account Setup Actions */}
+          {/* Sync, Import & Account Setup Actions */}
           <div className="flex items-center flex-wrap gap-2">
             <button
               onClick={() => fileInputRef.current?.click()}
@@ -516,8 +542,37 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium bg-sky-500 hover:bg-sky-600 text-white transition-all shadow-xs active:scale-95 cursor-pointer"
             >
               <Settings className="w-3.5 h-3.5" />
-              <span>Manage 2 Accounts</span>
+              <span>Manage Accounts</span>
             </button>
+
+            {meetings.length > 0 && (
+              showClearConfirm ? (
+                <div className="flex items-center gap-1.5 p-1 rounded-xl bg-rose-500/10 border border-rose-500/20">
+                  <span className="text-[11px] text-rose-600 dark:text-rose-400 px-1 font-medium">Clear all?</span>
+                  <button
+                    onClick={handleClearAll}
+                    className="px-2 py-0.5 rounded-lg text-[11px] font-bold bg-rose-500 text-white hover:bg-rose-600 transition-colors cursor-pointer"
+                  >
+                    Yes
+                  </button>
+                  <button
+                    onClick={() => setShowClearConfirm(false)}
+                    className="px-2 py-0.5 rounded-lg text-[11px] font-medium bg-neutral-200 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-300 transition-colors cursor-pointer"
+                  >
+                    No
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setShowClearConfirm(true)}
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-medium text-neutral-400 hover:text-rose-500 hover:bg-rose-500/10 transition-colors cursor-pointer"
+                  title="Clear all meetings"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Clear</span>
+                </button>
+              )
+            )}
           </div>
         </div>
 
@@ -906,7 +961,7 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
               <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 max-w-sm">
                 {meetings.length > 0
                   ? `You have ${meetings.length} meetings scheduled on other dates in your calendar.`
-                  : 'Connect your 2 Outlook accounts or reload sample pre-loaded meetings to preview DayFlow.'}
+                  : 'Import your .ics calendar file or sync your Outlook feeds to see all your meetings.'}
               </p>
               <div className="flex items-center gap-2 mt-4">
                 {meetings.length > 0 ? (
@@ -917,17 +972,22 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
                     <span>View All {meetings.length} Meetings</span>
                   </button>
                 ) : (
-                  <button
-                    onClick={() => {
-                      const sample = generateSampleDemoMeetings();
-                      saveStoredOutlookMeetings(sample);
-                      onImportMeetings(sample, 'Loaded sample Outlook meetings');
-                    }}
-                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-800 dark:text-neutral-200 transition-all shadow-2xs active:scale-95 cursor-pointer"
-                  >
-                    <Sparkles className="w-3.5 h-3.5 text-sky-500" />
-                    <span>Load Sample Meetings</span>
-                  </button>
+                  <>
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-sky-500 hover:bg-sky-600 text-white shadow-xs active:scale-95 transition-all cursor-pointer"
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>Import .ics File</span>
+                    </button>
+                    <button
+                      onClick={onOpenAccountsModal}
+                      className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-800 dark:text-neutral-200 transition-all shadow-2xs active:scale-95 cursor-pointer"
+                    >
+                      <Settings className="w-3.5 h-3.5" />
+                      <span>Setup Accounts</span>
+                    </button>
+                  </>
                 )}
               </div>
             </div>
