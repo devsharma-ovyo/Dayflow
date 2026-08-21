@@ -52,18 +52,12 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
   onAddTask,
 }) => {
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
-  const [viewMode, setViewMode] = useState<'day' | 'week' | 'all'>('day');
+  const [viewMode, setViewMode] = useState<'day' | 'week'>('day');
   const [addedTaskIds, setAddedTaskIds] = useState<Set<string>>(new Set());
   const [filterAccountId, setFilterAccountId] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
-
-  // New Filters based on user requirements:
-  // 1. Hide all-day meetings (default: true)
-  // 2. Hide past / already completed meetings for today (default: true)
-  const [hideAllDay, setHideAllDay] = useState<boolean>(true);
-  const [hidePastMeetings, setHidePastMeetings] = useState<boolean>(true);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -123,94 +117,42 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
 
   const now = new Date();
 
-  // Filter day meetings according to hideAllDay, hidePastMeetings, filterAccountId, and searchQuery
+  // Filter day meetings: strictly exclude all-day meetings and past meetings
   const filteredDayMeetings = rawDayMeetings.filter((m) => {
-    // Filter out all-day meetings if enabled
-    if (hideAllDay && m.allDay) return false;
-
-    // Filter out past/done meetings if on today
-    if (hidePastMeetings && isToday(selectedDate)) {
-      const end = new Date(m.end || m.start);
-      if (end.getTime() < now.getTime()) {
-        return false;
-      }
-    }
-
-    if (filterAccountId !== 'all' && m.accountId !== filterAccountId) return false;
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      const matchTitle = m.title.toLowerCase().includes(q);
-      const matchOrg = (m.organizer || '').toLowerCase().includes(q);
-      const matchLoc = (m.location || '').toLowerCase().includes(q);
-      if (!matchTitle && !matchOrg && !matchLoc) return false;
-    }
-    return true;
-  });
-
-  // Filter all meetings for all view
-  const allFilteredMeetings = meetings.filter((m) => {
-    if (hideAllDay && m.allDay) return false;
-    if (filterAccountId !== 'all' && m.accountId !== filterAccountId) return false;
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      const matchTitle = m.title.toLowerCase().includes(q);
-      const matchOrg = (m.organizer || '').toLowerCase().includes(q);
-      const matchLoc = (m.location || '').toLowerCase().includes(q);
-      if (!matchTitle && !matchOrg && !matchLoc) return false;
-    }
-    return true;
-  });
-
-  // Count past meetings on selected day (if today)
-  const pastMeetingsCountToday = rawDayMeetings.filter((m) => {
     if (m.allDay) return false;
     const end = new Date(m.end || m.start);
-    return isToday(selectedDate) && end.getTime() < now.getTime();
-  }).length;
-
-  const allDayMeetingsCountToday = rawDayMeetings.filter((m) => m.allDay).length;
-
-  // Unique days with meetings
-  const uniqueDatesWithMeetings = new Set(
-    meetings.map((m) => {
-      const d = new Date(m.start);
-      return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-    })
-  );
-
-  // Group all meetings by date string for "All Schedule" view
-  const groupedMeetingsByDate = React.useMemo(() => {
-    const groups: { dateKey: string; date: Date; items: OutlookMeeting[] }[] = [];
-    const map = new Map<string, { date: Date; items: OutlookMeeting[] }>();
-
-    for (const m of allFilteredMeetings) {
-      const d = new Date(m.start);
-      const key = `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`;
-      if (!map.has(key)) {
-        map.set(key, {
-          date: new Date(d.getFullYear(), d.getMonth(), d.getDate()),
-          items: [],
-        });
-      }
-      map.get(key)!.items.push(m);
+    if (end.getTime() < now.getTime()) {
+      return false;
     }
 
-    // Sort dates chronologically
-    const sortedKeys = Array.from(map.keys()).sort();
-    for (const key of sortedKeys) {
-      const val = map.get(key)!;
-      groups.push({
-        dateKey: key,
-        date: val.date,
-        items: val.items.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()),
-      });
+    if (filterAccountId !== 'all' && m.accountId !== filterAccountId) return false;
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      const matchTitle = m.title.toLowerCase().includes(q);
+      const matchOrg = (m.organizer || '').toLowerCase().includes(q);
+      const matchLoc = (m.location || '').toLowerCase().includes(q);
+      if (!matchTitle && !matchOrg && !matchLoc) return false;
     }
+    return true;
+  });
 
-    return groups;
-  }, [allFilteredMeetings]);
+  // Filter all meetings strictly: exclude all-day and past meetings
+  const allFilteredMeetings = meetings.filter((m) => {
+    if (m.allDay) return false;
+    const end = new Date(m.end || m.start);
+    if (end.getTime() < now.getTime()) return false;
+    if (filterAccountId !== 'all' && m.accountId !== filterAccountId) return false;
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      const matchTitle = m.title.toLowerCase().includes(q);
+      const matchOrg = (m.organizer || '').toLowerCase().includes(q);
+      const matchLoc = (m.location || '').toLowerCase().includes(q);
+      if (!matchTitle && !matchOrg && !matchLoc) return false;
+    }
+    return true;
+  });
 
   // Calculate meeting stats for this day
-  const totalTodayCount = rawDayMeetings.length;
   const totalVisibleDayCount = filteredDayMeetings.length;
   
   // Counts per account
@@ -475,65 +417,50 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
               >
                 Week View
               </button>
-              <button
-                onClick={() => setViewMode('all')}
-                className={`flex items-center gap-1.5 px-3 py-1 rounded-lg transition-all cursor-pointer ${
-                  viewMode === 'all'
-                    ? 'bg-white dark:bg-neutral-900 text-sky-600 dark:text-sky-400 shadow-2xs font-semibold'
-                    : 'text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-200'
-                }`}
-              >
-                <span>All Schedule</span>
-                <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-sky-500/10 text-sky-600 dark:text-sky-400 font-mono">
-                  {meetings.length}
-                </span>
-              </button>
             </div>
 
             {/* Date Navigation for Day / Week modes */}
-            {viewMode !== 'all' && (
-              <div className="flex items-center gap-1.5 bg-neutral-50 dark:bg-neutral-800/40 p-1 rounded-xl border border-neutral-200/60 dark:border-neutral-800">
-                <button
-                  onClick={handlePrevDay}
-                  className="p-1 rounded-lg text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100 hover:bg-neutral-200/50 dark:hover:bg-neutral-700 transition-colors cursor-pointer"
-                  title="Previous Day"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                </button>
+            <div className="flex items-center gap-1.5 bg-neutral-50 dark:bg-neutral-800/40 p-1 rounded-xl border border-neutral-200/60 dark:border-neutral-800">
+              <button
+                onClick={handlePrevDay}
+                className="p-1 rounded-lg text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100 hover:bg-neutral-200/50 dark:hover:bg-neutral-700 transition-colors cursor-pointer"
+                title="Previous Day"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
 
-                <div className="flex items-center gap-1.5 px-1.5">
-                  <span className="text-xs font-semibold text-neutral-900 dark:text-neutral-100 whitespace-nowrap">
-                    {selectedDate.toLocaleDateString([], {
-                      weekday: 'short',
-                      month: 'short',
-                      day: 'numeric',
-                    })}
-                  </span>
-                  {isToday(selectedDate) && (
-                    <span className="px-1.5 py-0.2 rounded-md text-[9px] font-bold bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20">
-                      Today
-                    </span>
-                  )}
-                </div>
-
-                <button
-                  onClick={handleNextDay}
-                  className="p-1 rounded-lg text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100 hover:bg-neutral-200/50 dark:hover:bg-neutral-700 transition-colors cursor-pointer"
-                  title="Next Day"
-                >
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-
-                {!isToday(selectedDate) && (
-                  <button
-                    onClick={handleToday}
-                    className="px-2 py-0.5 text-[11px] font-medium text-sky-600 dark:text-sky-400 hover:underline cursor-pointer"
-                  >
+              <div className="flex items-center gap-1.5 px-1.5">
+                <span className="text-xs font-semibold text-neutral-900 dark:text-neutral-100 whitespace-nowrap">
+                  {selectedDate.toLocaleDateString([], {
+                    weekday: 'short',
+                    month: 'short',
+                    day: 'numeric',
+                  })}
+                </span>
+                {isToday(selectedDate) && (
+                  <span className="px-1.5 py-0.2 rounded-md text-[9px] font-bold bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20">
                     Today
-                  </button>
+                  </span>
                 )}
               </div>
-            )}
+
+              <button
+                onClick={handleNextDay}
+                className="p-1 rounded-lg text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100 hover:bg-neutral-200/50 dark:hover:bg-neutral-700 transition-colors cursor-pointer"
+                title="Next Day"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+
+              {!isToday(selectedDate) && (
+                <button
+                  onClick={handleToday}
+                  className="px-2 py-0.5 text-[11px] font-medium text-sky-600 dark:text-sky-400 hover:underline cursor-pointer"
+                >
+                  Today
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Sync, Import & Account Setup Actions */}
@@ -659,19 +586,19 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
           </div>
         )}
 
-        {/* Prominent Meeting Count & Calendar Breakdown Stats */}
+        {/* Meeting Count & Breakdown Stats */}
         <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 pt-1">
           {/* Total Meetings Count */}
           <div className="p-3.5 rounded-xl bg-linear-to-br from-sky-500/10 via-sky-500/5 to-indigo-500/10 border border-sky-500/20 flex flex-col justify-between">
             <span className="text-[11px] font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">
-              {viewMode === 'day' ? (isToday(selectedDate) && hidePastMeetings ? "Today's Remaining" : 'Meetings Visible') : 'Total In Calendar'}
+              {isToday(selectedDate) ? "Today's Meetings" : "Scheduled Calls"}
             </span>
             <div className="flex items-baseline gap-2 mt-1">
               <span className="text-2xl font-bold text-neutral-900 dark:text-white font-mono">
-                {viewMode === 'day' ? totalVisibleDayCount : allFilteredMeetings.length}
+                {totalVisibleDayCount}
               </span>
               <span className="text-xs text-neutral-500 dark:text-neutral-400">
-                {viewMode === 'day' ? (totalTodayCount !== totalVisibleDayCount ? `(${totalTodayCount} total)` : 'events') : `across ${uniqueDatesWithMeetings.size} days`}
+                {totalVisibleDayCount === 1 ? 'call' : 'calls'}
               </span>
             </div>
           </div>
@@ -686,10 +613,10 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
             </div>
             <div className="flex items-baseline gap-1.5 mt-1">
               <span className="text-xl font-bold text-neutral-900 dark:text-white font-mono">
-                {viewMode === 'day' ? accountStats[0]?.dayCount || 0 : accountStats[0]?.count || 0}
+                {accountStats[0]?.dayCount || 0}
               </span>
               <span className="text-xs text-neutral-500">
-                {viewMode === 'day' ? `today (${accountStats[0]?.count || 0} total)` : 'events'}
+                {isToday(selectedDate) ? 'today' : 'calls'}
               </span>
             </div>
           </div>
@@ -704,10 +631,10 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
             </div>
             <div className="flex items-baseline gap-1.5 mt-1">
               <span className="text-xl font-bold text-neutral-900 dark:text-white font-mono">
-                {viewMode === 'day' ? accountStats[1]?.dayCount || 0 : accountStats[1]?.count || 0}
+                {accountStats[1]?.dayCount || 0}
               </span>
               <span className="text-xs text-neutral-500">
-                {viewMode === 'day' ? `today (${accountStats[1]?.count || 0} total)` : 'events'}
+                {isToday(selectedDate) ? 'today' : 'calls'}
               </span>
             </div>
           </div>
@@ -715,14 +642,14 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
           {/* Today's Total Duration Time */}
           <div className="p-3.5 rounded-xl bg-neutral-50 dark:bg-neutral-800/50 border border-neutral-200 dark:border-neutral-800 flex flex-col justify-between">
             <span className="text-[11px] font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">
-              {viewMode === 'day' ? 'Day Time Block' : 'Today Schedule'}
+              Time In Calls
             </span>
             <div className="flex items-baseline gap-1.5 mt-1">
               <span className="text-xl font-bold text-neutral-900 dark:text-white font-mono">
-                {viewMode === 'day' ? (totalDurationMinutes > 0 ? formattedDuration : '0m') : `${totalTodayCount} today`}
+                {totalDurationMinutes > 0 ? formattedDuration : '0m'}
               </span>
               <span className="text-xs text-neutral-500">
-                {viewMode === 'day' ? 'in calls' : 'scheduled'}
+                scheduled
               </span>
             </div>
           </div>
@@ -766,81 +693,39 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
         )}
       </div>
 
-      {/* Filter Tabs, Toggles & Search */}
+      {/* Filter Tabs & Search */}
       <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5">
-        {/* Account Filter Chips & Quick Toggles */}
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Account Filter Chips */}
-          <div className="flex items-center gap-1.5 p-1 rounded-xl bg-neutral-200/70 dark:bg-neutral-900 border border-neutral-300/50 dark:border-neutral-800 text-xs overflow-x-auto select-none">
-            <button
-              onClick={() => setFilterAccountId('all')}
-              className={`px-3 py-1.5 rounded-lg font-medium transition-all cursor-pointer whitespace-nowrap ${
-                filterAccountId === 'all'
-                  ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white shadow-xs'
-                  : 'text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100'
-              }`}
-            >
-              All Accounts ({viewMode === 'day' ? totalVisibleDayCount : allFilteredMeetings.length})
-            </button>
+        {/* Account Filter Chips */}
+        <div className="flex items-center gap-1.5 p-1 rounded-xl bg-neutral-200/70 dark:bg-neutral-900 border border-neutral-300/50 dark:border-neutral-800 text-xs overflow-x-auto select-none">
+          <button
+            onClick={() => setFilterAccountId('all')}
+            className={`px-3 py-1.5 rounded-lg font-medium transition-all cursor-pointer whitespace-nowrap ${
+              filterAccountId === 'all'
+                ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white shadow-xs'
+                : 'text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100'
+            }`}
+          >
+            All Accounts ({totalVisibleDayCount})
+          </button>
 
-            {accounts.map((acc) => {
-              const count = viewMode === 'day'
-                ? filteredDayMeetings.filter((m) => m.accountId === acc.id).length
-                : allFilteredMeetings.filter((m) => m.accountId === acc.id).length;
-              return (
-                <button
-                  key={acc.id}
-                  onClick={() => setFilterAccountId(acc.id)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-medium transition-all cursor-pointer whitespace-nowrap ${
-                    filterAccountId === acc.id
-                      ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white shadow-xs'
-                      : 'text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100'
-                  }`}
-                >
-                  <span className={`w-2 h-2 rounded-full bg-${acc.color}-500`} />
-                  <span>{acc.name}</span>
-                  <span className="text-[10px] opacity-70">({count})</span>
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Quick Filter Toggles (Hide All-Day & Hide Done Meetings) */}
-          <div className="flex items-center gap-1.5 bg-neutral-100 dark:bg-neutral-900/80 p-1 rounded-xl border border-neutral-200 dark:border-neutral-800 text-xs">
-            <button
-              type="button"
-              onClick={() => setHideAllDay(!hideAllDay)}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all cursor-pointer text-[11px] font-medium ${
-                hideAllDay
-                  ? 'bg-sky-500/15 text-sky-600 dark:text-sky-400 font-semibold border border-sky-500/30'
-                  : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
-              }`}
-              title="Toggle all-day meetings on or off"
-            >
-              <span>Hide All-Day</span>
-              {allDayMeetingsCountToday > 0 && (
-                <span className="text-[10px] opacity-75 font-mono">({allDayMeetingsCountToday})</span>
-              )}
-            </button>
-
-            {isToday(selectedDate) && (
+          {accounts.map((acc) => {
+            const count = filteredDayMeetings.filter((m) => m.accountId === acc.id).length;
+            return (
               <button
-                type="button"
-                onClick={() => setHidePastMeetings(!hidePastMeetings)}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all cursor-pointer text-[11px] font-medium ${
-                  hidePastMeetings
-                    ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-semibold border border-emerald-500/30'
-                    : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
+                key={acc.id}
+                onClick={() => setFilterAccountId(acc.id)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-medium transition-all cursor-pointer whitespace-nowrap ${
+                  filterAccountId === acc.id
+                    ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white shadow-xs'
+                    : 'text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100'
                 }`}
-                title="Filter out meetings that have already ended today"
               >
-                <span>Hide Completed</span>
-                {pastMeetingsCountToday > 0 && (
-                  <span className="text-[10px] opacity-75 font-mono">({pastMeetingsCountToday} past)</span>
-                )}
+                <span className={`w-2 h-2 rounded-full bg-${acc.color}-500`} />
+                <span>{acc.name}</span>
+                <span className="text-[10px] opacity-70">({count})</span>
               </button>
-            )}
-          </div>
+            );
+          })}
         </div>
 
         {/* Quick Search */}
@@ -852,68 +737,6 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
           className="px-3 py-1.5 rounded-xl text-xs bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-hidden focus:ring-1 focus:ring-sky-500 shadow-2xs"
         />
       </div>
-
-      {/* VIEW MODE: ALL SCHEDULE (FULL LIST GROUPED BY DATE) */}
-      {viewMode === 'all' && (
-        <div className="space-y-6">
-          <div className="flex items-center justify-between text-xs text-neutral-500 dark:text-neutral-400 px-1">
-            <span>Showing all <strong>{allFilteredMeetings.length}</strong> meetings across your calendar</span>
-            <button
-              onClick={() => setViewMode('day')}
-              className="text-sky-500 hover:underline font-medium cursor-pointer"
-            >
-              Switch to Day View &rarr;
-            </button>
-          </div>
-
-          {groupedMeetingsByDate.length === 0 ? (
-            <div className="flex flex-col items-center justify-center p-12 text-center rounded-2xl border border-dashed border-neutral-300 dark:border-neutral-800 bg-white/40 dark:bg-neutral-900/40 backdrop-blur-xs">
-              <CalendarCheck className="w-8 h-8 text-sky-500 mb-2" />
-              <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-                No meetings found
-              </h3>
-              <p className="text-xs text-neutral-500 mt-1">
-                Try clearing your search query or uploading another .ics file.
-              </p>
-            </div>
-          ) : (
-            groupedMeetingsByDate.map((group) => {
-              const isTod = isToday(group.date);
-
-              return (
-                <div key={group.dateKey} className="space-y-3">
-                  {/* Date Header */}
-                  <div className="flex items-center justify-between py-1 border-b border-neutral-200 dark:border-neutral-800">
-                    <div className="flex items-center gap-2">
-                      <span className={`text-xs font-bold ${isTod ? 'text-sky-600 dark:text-sky-400' : 'text-neutral-800 dark:text-neutral-200'}`}>
-                        {group.date.toLocaleDateString([], {
-                          weekday: 'long',
-                          month: 'short',
-                          day: 'numeric',
-                          year: group.date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined,
-                        })}
-                      </span>
-                      {isTod && (
-                        <span className="px-1.5 py-0.2 rounded-md text-[9px] font-bold bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20">
-                          Today
-                        </span>
-                      )}
-                    </div>
-                    <span className="text-[11px] text-neutral-400">
-                      {group.items.length} {group.items.length === 1 ? 'event' : 'events'}
-                    </span>
-                  </div>
-
-                  {/* Meetings in this date */}
-                  <div className="space-y-3">
-                    {group.items.map(renderMeetingCard)}
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </div>
-      )}
 
       {/* VIEW MODE: WEEK VIEW */}
       {viewMode === 'week' && (
@@ -994,60 +817,32 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
       {/* VIEW MODE: DAY VIEW (DEFAULT) */}
       {viewMode === 'day' && (
         <div className="space-y-4">
-          {/* Subtle Tip if there are more meetings on other dates */}
-          {meetings.length > rawDayMeetings.length && (
-            <div className="flex items-center justify-between p-2.5 rounded-xl bg-neutral-100/70 dark:bg-neutral-800/50 border border-neutral-200/60 dark:border-neutral-700/50 text-xs text-neutral-600 dark:text-neutral-300">
-              <span>
-                Showing <strong>{filteredDayMeetings.length}</strong> {filteredDayMeetings.length === 1 ? 'meeting' : 'meetings'} for {isToday(selectedDate) ? 'today' : selectedDate.toLocaleDateString([], { month: 'short', day: 'numeric' })} (<strong>{meetings.length}</strong> total meetings in calendar).
-              </span>
-              <button
-                onClick={() => setViewMode('all')}
-                className="text-sky-600 dark:text-sky-400 font-semibold underline hover:opacity-80 shrink-0 ml-2 cursor-pointer"
-              >
-                Show All Schedule
-              </button>
-            </div>
-          )}
-
           {filteredDayMeetings.length === 0 ? (
             <div className="flex flex-col items-center justify-center p-12 text-center rounded-2xl border border-dashed border-neutral-300 dark:border-neutral-800 bg-white/40 dark:bg-neutral-900/40 backdrop-blur-xs">
               <div className="w-12 h-12 rounded-2xl bg-sky-500/10 text-sky-500 flex items-center justify-center mb-3">
                 <CalendarCheck className="w-6 h-6" />
               </div>
               <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-                {searchQuery ? 'No matching meetings found' : 'No Meetings Scheduled for this Day'}
+                {searchQuery ? 'No matching meetings found' : 'No upcoming meetings scheduled for this day'}
               </h3>
               <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 max-w-sm">
-                {meetings.length > 0
-                  ? `You have ${meetings.length} meetings scheduled on other dates in your calendar.`
-                  : 'Import your .ics calendar file or sync your Outlook feeds to see all your meetings.'}
+                All-day events and completed past meetings are automatically filtered out.
               </p>
               <div className="flex items-center gap-2 mt-4">
-                {meetings.length > 0 ? (
-                  <button
-                    onClick={() => setViewMode('all')}
-                    className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-sky-500 hover:bg-sky-600 text-white shadow-xs active:scale-95 transition-all cursor-pointer"
-                  >
-                    <span>View All {meetings.length} Meetings</span>
-                  </button>
-                ) : (
-                  <>
-                    <button
-                      onClick={() => fileInputRef.current?.click()}
-                      className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-sky-500 hover:bg-sky-600 text-white shadow-xs active:scale-95 transition-all cursor-pointer"
-                    >
-                      <Upload className="w-3.5 h-3.5" />
-                      <span>Import .ics File</span>
-                    </button>
-                    <button
-                      onClick={onOpenAccountsModal}
-                      className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-800 dark:text-neutral-200 transition-all shadow-2xs active:scale-95 cursor-pointer"
-                    >
-                      <Settings className="w-3.5 h-3.5" />
-                      <span>Setup Accounts</span>
-                    </button>
-                  </>
-                )}
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-sky-500 hover:bg-sky-600 text-white shadow-xs active:scale-95 transition-all cursor-pointer"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>Import .ics File</span>
+                </button>
+                <button
+                  onClick={onOpenAccountsModal}
+                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-800 dark:text-neutral-200 transition-all shadow-2xs active:scale-95 cursor-pointer"
+                >
+                  <Settings className="w-3.5 h-3.5" />
+                  <span>Setup Accounts</span>
+                </button>
               </div>
             </div>
           ) : (
