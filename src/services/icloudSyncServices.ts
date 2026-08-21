@@ -1,9 +1,4 @@
-// iCloud Drive File & Direct Peer Sync Engine for DayFlow (MacBook ⇄ iPhone)
-// Provides:
-// 1. Native File System Access API (Save directly to / open from iCloud Drive folder)
-// 2. Fallback direct JSON export/import for mobile Safari & Files app
-// 3. WebRTC Local P2P Sync (Direct peer-to-peer real-time connection across Wi-Fi)
-
+// iCloud Drive File & Apple Shortcuts Auto-Sync Service for DayFlow (MacBook ⇄ iPhone)
 import { Task, AppSettings } from '../types';
 
 export interface ICloudBackup {
@@ -16,13 +11,49 @@ export interface ICloudBackup {
   settings: Partial<AppSettings>;
 }
 
-const ICLOUD_FILENAME = 'DayFlow_Tasks.json';
+export const ICLOUD_FILENAME = 'DayFlow_Tasks.json';
+export const ICLOUD_LAST_SYNC_KEY = 'dayflow_icloud_last_sync_time';
+export const ICLOUD_AUTO_SYNC_ENABLED_KEY = 'dayflow_icloud_autosync_hourly';
+export const ICLOUD_CACHED_BACKUP_KEY = 'dayflow_icloud_cached_backup';
+
+export function getStoredICloudSyncTime(): number | null {
+  try {
+    const val = localStorage.getItem(ICLOUD_LAST_SYNC_KEY);
+    return val ? parseInt(val, 10) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setStoredICloudSyncTime(ts: number): void {
+  try {
+    localStorage.setItem(ICLOUD_LAST_SYNC_KEY, ts.toString());
+  } catch {
+    // Ignore
+  }
+}
+
+export function getIsHourlySyncEnabled(): boolean {
+  try {
+    const val = localStorage.getItem(ICLOUD_AUTO_SYNC_ENABLED_KEY);
+    return val !== null ? val === 'true' : true; // Default to true
+  } catch {
+    return true;
+  }
+}
+
+export function setIsHourlySyncEnabled(enabled: boolean): void {
+  try {
+    localStorage.setItem(ICLOUD_AUTO_SYNC_ENABLED_KEY, enabled.toString());
+  } catch {
+    // Ignore
+  }
+}
 
 /**
- * Saves tasks directly to iCloud Drive (or Downloads on devices supporting File System Access API)
- * or triggers a standard iOS/macOS download to iCloud Drive.
+ * Saves tasks directly to iCloud Drive (via File System Access API or browser download into iCloud Drive folder)
  */
-export async function saveToICloudDrive(tasks: Task[], settings: Partial<AppSettings>): Promise<{ success: boolean; filename: string }> {
+export async function saveToICloudDrive(tasks: Task[], settings: Partial<AppSettings>, silent = false): Promise<{ success: boolean; filename: string }> {
   const payload: ICloudBackup = {
     app: 'DayFlow',
     version: 1,
@@ -41,8 +72,17 @@ export async function saveToICloudDrive(tasks: Task[], settings: Partial<AppSett
   const jsonString = JSON.stringify(payload, null, 2);
   const blob = new Blob([jsonString], { type: 'application/json' });
 
-  // 1. Modern File System Access API (Save dialog directly inside iCloud Drive in Finder)
-  if ('showSaveFilePicker' in window) {
+  // Store in cache for recovery
+  try {
+    localStorage.setItem(ICLOUD_CACHED_BACKUP_KEY, jsonString);
+  } catch {
+    // Ignore quota issues
+  }
+
+  setStoredICloudSyncTime(Date.now());
+
+  // 1. File System Access API (Supported on macOS Chrome, Edge, Safari TP - direct Save to iCloud Drive)
+  if ('showSaveFilePicker' in window && !silent) {
     try {
       const handle = await (window as any).showSaveFilePicker({
         suggestedName: ICLOUD_FILENAME,
@@ -64,7 +104,7 @@ export async function saveToICloudDrive(tasks: Task[], settings: Partial<AppSett
     }
   }
 
-  // 2. Universal iOS / macOS Safari Fallback (Prompts download into iCloud Drive / Files)
+  // 2. Universal iOS / macOS Safari Fallback (Prompts Save to Files > iCloud Drive)
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -88,7 +128,8 @@ export function openFromICloudDrive(file: File): Promise<ICloudBackup> {
         const text = e.target?.result as string;
         const parsed = JSON.parse(text);
 
-        // Handle both full DayFlow backup object and raw Task[] array
+        setStoredICloudSyncTime(Date.now());
+
         if (Array.isArray(parsed)) {
           resolve({
             app: 'DayFlow',
@@ -111,4 +152,41 @@ export function openFromICloudDrive(file: File): Promise<ICloudBackup> {
     reader.onerror = () => reject(new Error('Failed to read file from storage.'));
     reader.readAsText(file);
   });
+}
+
+/**
+ * Parses payload passed on launch via Apple Shortcuts (URL Hash or query parameter)
+ * Supports: #icloud=<encoded_json>, #icloud=base64:<data>, #importTasks=<json>
+ */
+export function parseLaunchShortcutData(rawHashOrUrl: string): { tasks: Task[]; settings?: Partial<AppSettings> } | null {
+  try {
+    let payloadStr = '';
+
+    if (rawHashOrUrl.includes('icloud=')) {
+      payloadStr = rawHashOrUrl.split('icloud=')[1]?.split('&')[0];
+    } else if (rawHashOrUrl.includes('importTasks=')) {
+      payloadStr = rawHashOrUrl.split('importTasks=')[1]?.split('&')[0];
+    } else if (rawHashOrUrl.includes('data=')) {
+      payloadStr = rawHashOrUrl.split('data=')[1]?.split('&')[0];
+    }
+
+    if (!payloadStr) return null;
+
+    let jsonText = '';
+    if (payloadStr.startsWith('base64:')) {
+      jsonText = atob(payloadStr.replace('base64:', ''));
+    } else {
+      jsonText = decodeURIComponent(payloadStr);
+    }
+
+    const parsed = JSON.parse(jsonText);
+    if (Array.isArray(parsed)) {
+      return { tasks: parsed };
+    } else if (parsed && Array.isArray(parsed.tasks)) {
+      return { tasks: parsed.tasks, settings: parsed.settings };
+    }
+  } catch (err) {
+    console.warn('Failed to parse Apple Shortcut launch data:', err);
+  }
+  return null;
 }
