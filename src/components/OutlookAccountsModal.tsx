@@ -21,8 +21,9 @@ import {
   syncOutlookAccount, 
   parseICS, 
   generateSampleDemoMeetings, 
-  saveStoredOutlookMeetings,
-  getStoredOutlookMeetings 
+  saveStoredOutlookMeetings, 
+  getStoredOutlookMeetings,
+  isDummyDemoMeeting
 } from '../services/outlookSyncService';
 
 interface OutlookAccountsModalProps {
@@ -86,10 +87,21 @@ export const OutlookAccountsModal: React.FC<OutlookAccountsModalProps> = ({
           msg: `Successfully connected! Found ${res.meetings.length} events.`,
         },
       }));
-      // Merge test results into storage
-      const currentStored = getStoredOutlookMeetings();
+      // Merge test results into storage, excluding dummy demo meetings
+      const currentStored = getStoredOutlookMeetings().filter((m) => !isDummyDemoMeeting(m));
       const otherAcc = currentStored.filter((m) => m.accountId !== account.id);
-      const combined = [...otherAcc, ...res.meetings];
+      
+      const uniqueMap = new Map<string, OutlookMeeting>();
+      for (const m of [...otherAcc, ...res.meetings]) {
+        const dedupKey = `${m.accountId}__${m.title.trim().toLowerCase()}__${m.start}`;
+        if (!uniqueMap.has(dedupKey)) {
+          uniqueMap.set(dedupKey, m);
+        }
+      }
+      const combined = Array.from(uniqueMap.values()).sort(
+        (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
+      );
+
       saveStoredOutlookMeetings(combined);
       onImportMeetings(combined, `Connected to ${account.name}! Found ${res.meetings.length} events.`);
     } else {
@@ -133,10 +145,18 @@ export const OutlookAccountsModal: React.FC<OutlookAccountsModalProps> = ({
             return;
           }
 
-          // Merge with meetings from other accounts
-          const currentStored = getStoredOutlookMeetings();
+          // Merge with meetings from other accounts, filtering out dummy demo meetings
+          const currentStored = getStoredOutlookMeetings().filter((m) => !isDummyDemoMeeting(m));
           const otherAccountsMeetings = currentStored.filter((m) => m.accountId !== targetAcc.id);
-          const combined = [...otherAccountsMeetings, ...parsed].sort(
+          
+          const uniqueMap = new Map<string, OutlookMeeting>();
+          for (const m of [...otherAccountsMeetings, ...parsed]) {
+            const dedupKey = `${m.accountId}__${m.title.trim().toLowerCase()}__${m.start}`;
+            if (!uniqueMap.has(dedupKey)) {
+              uniqueMap.set(dedupKey, m);
+            }
+          }
+          const combined = Array.from(uniqueMap.values()).sort(
             (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
           );
 
