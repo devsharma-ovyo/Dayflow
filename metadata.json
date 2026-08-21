@@ -1,6 +1,6 @@
 {
   "name": "Planner",
-  "description": "A macOS-styled personal task management PWA with automatic recurring resets, streak tracking, time-based reminders, and offline support.",
+  "description": "A macOS-styled personal task manager and dual-account Outlook meeting sync planner with recurring resets, habit streak tracking, and offline support.",
   "requestFramePermissions": [
     "notifications"
   ],
