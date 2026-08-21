@@ -27,7 +27,7 @@ interface MacTitleBarProps {
   onOpenStreaksModal: () => void;
   onOpenLimitationsModal: () => void;
   onOpenCloudSyncModal: () => void;
-  currentSyncCode: string | null;
+  currentSyncCode?: string | null;
   installPromptAvailable: boolean;
   onInstallApp: () => void;
   isStandalone: boolean;
@@ -95,24 +95,15 @@ export const MacTitleBar: React.FC<MacTitleBarProps> = ({
 
       {/* Right: Actions (Cloud Sync, New Task, Audio, Notifications, Theme) */}
       <div className="flex items-center gap-1.5">
-        {/* Cloud Sync Button */}
+        {/* iCloud Backup & Sync Button */}
         <button
           id="btn-cloud-sync"
           onClick={onOpenCloudSyncModal}
-          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer ${
-            currentSyncCode
-              ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20'
-              : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-700'
-          }`}
-          title={currentSyncCode ? `Cloud Sync Active: ${currentSyncCode}` : 'Sync with iPhone / Mac'}
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-200 hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-all cursor-pointer border border-neutral-200/60 dark:border-neutral-700/60 shadow-2xs active:scale-98"
+          title="iCloud Backup & Apple Shortcuts Sync"
         >
-          <FolderSync className={`w-3.5 h-3.5 ${currentSyncCode ? 'text-emerald-500' : 'text-neutral-500'}`} />
-          <span className="hidden sm:inline">
-            {currentSyncCode ? currentSyncCode : 'iCloud / Sync'}
-          </span>
-          {currentSyncCode && (
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-          )}
+          <FolderSync className="w-3.5 h-3.5 text-sky-500" />
+          <span className="hidden sm:inline">iCloud Backup</span>
         </button>
 
         {/* Quick New Task Button */}
