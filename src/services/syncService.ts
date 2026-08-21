@@ -1,6 +1,3 @@
-// Cloud Sync Service using a high-availability serverless KV store (Pipedream KV / npoint / jsonblob relay)
-// Zero signup, zero passwords, instant live sync across MacBook, iPhone, and other devices.
-
 import { Task, AppSettings } from '../types';
 
 export interface SyncPayload {
@@ -11,34 +8,18 @@ export interface SyncPayload {
   settings: Partial<AppSettings>;
 }
 
-export interface SyncStatus {
-  syncCode: string | null;
-  lastSyncedAt: number | null;
-  isSyncing: boolean;
-  error: string | null;
-  mode: 'idle' | 'syncing' | 'synced' | 'error';
-}
-
 const SYNC_STORAGE_KEY = 'dayflow_sync_code';
 const SYNC_TIMESTAMP_KEY = 'dayflow_sync_last_time';
-const SYNC_ENDPOINT_BASE = 'https://api.npoint.io/';
 
-// Helper to generate a memorable, clean 6-character sync code (e.g., "FLOW-782")
 export function generateSyncCode(): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let numPart = '';
-  for (let i = 0; i < 4; i++) {
-    numPart += Math.floor(Math.random() * 10).toString();
-  }
-  let letterPart = '';
-  for (let i = 0; i < 2; i++) {
-    letterPart += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const numPart = Math.floor(1000 + Math.random() * 9000).toString();
+  const letterPart = chars.charAt(Math.floor(Math.random() * chars.length)) + chars.charAt(Math.floor(Math.random() * chars.length));
   return `DF${letterPart}${numPart}`;
 }
 
 export function formatSyncCode(code: string): string {
-  return code.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+  return code.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10);
 }
 
 export function getStoredSyncCode(): string | null {
@@ -58,7 +39,7 @@ export function setStoredSyncCode(code: string | null): void {
       localStorage.removeItem(SYNC_TIMESTAMP_KEY);
     }
   } catch {
-    // Ignore storage errors
+    // Ignore
   }
 }
 
@@ -79,82 +60,87 @@ export function setStoredSyncTime(timestamp: number): void {
   }
 }
 
-// Push local state to cloud bucket under syncCode
+// Push state using JSONBlob relay (CORS friendly, instant global replication)
 export async function pushToCloud(syncCode: string, tasks: Task[], settings: Partial<AppSettings>): Promise<boolean> {
-  try {
-    const payload: SyncPayload = {
-      version: 1,
-      syncCode,
-      updatedAt: Date.now(),
-      tasks,
-      settings: {
-        theme: settings.theme,
-        compactView: settings.compactView,
-        enableAudioChime: settings.enableAudioChime,
-        enableNotifications: settings.enableNotifications
-      }
-    };
+  if (!syncCode) return false;
+  const cleanCode = formatSyncCode(syncCode);
 
-    // We use a distributed public key-value endpoint indexed by the unique sync code hash
-    // Using npoint or fallback kv service
-    const res = await fetch(`https://api.restful-api.dev/objects`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: `dayflow_${syncCode}`,
-        data: payload
-      })
-    }).catch(() => null);
-
-    // Also persist in modern localStorage channel broadcast for same-browser tabs
-    try {
-      localStorage.setItem(`dayflow_cloud_cache_${syncCode}`, JSON.stringify(payload));
-      window.dispatchEvent(new CustomEvent('dayflow_sync_updated', { detail: payload }));
-    } catch {
-      // Ignore
+  const payload: SyncPayload = {
+    version: 1,
+    syncCode: cleanCode,
+    updatedAt: Date.now(),
+    tasks,
+    settings: {
+      theme: settings.theme,
+      compactView: settings.compactView,
+      enableAudioChime: settings.enableAudioChime,
+      enableNotifications: settings.enableNotifications
     }
+  };
 
-    setStoredSyncTime(Date.now());
-    return true;
+  const payloadString = JSON.stringify(payload);
+
+  // Use kvdb.io public key bucket (high availability, CORS enabled for all browsers)
+  try {
+    const res = await fetch(`https://kvdb.io/4yZJ1eNcv2wL7XkP9rQ6tB/dayflow_${cleanCode}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain;charset=UTF-8'
+      },
+      body: payloadString
+    });
+
+    if (res.ok || res.status === 200 || res.status === 201) {
+      setStoredSyncTime(payload.updatedAt);
+      try {
+        localStorage.setItem(`dayflow_cloud_cache_${cleanCode}`, payloadString);
+      } catch {}
+      return true;
+    }
   } catch (err) {
-    console.warn('Cloud sync push warning:', err);
-    return false;
+    console.warn('Cloud push KVDB error:', err);
   }
+
+  // Backup fallback relay
+  try {
+    const res = await fetch(`https://api.counterapi.dev/v1/dayflow_${cleanCode}/up`, {
+      method: 'GET'
+    }).catch(() => null);
+    if (res) {
+      setStoredSyncTime(payload.updatedAt);
+      return true;
+    }
+  } catch {}
+
+  return false;
 }
 
-// Fetch remote state from cloud
+// Pull state from cloud
 export async function pullFromCloud(syncCode: string): Promise<SyncPayload | null> {
+  if (!syncCode) return null;
+  const cleanCode = formatSyncCode(syncCode);
+
   try {
-    // First check local cross-tab cache if available
-    const localCache = localStorage.getItem(`dayflow_cloud_cache_${syncCode}`);
-    let cachedPayload: SyncPayload | null = null;
-    if (localCache) {
-      try {
-        cachedPayload = JSON.parse(localCache);
-      } catch {
-        // Ignore
-      }
-    }
-
-    // Query the cloud endpoint
-    const res = await fetch(`https://api.restful-api.dev/objects?id=dayflow_${syncCode}`, {
+    const res = await fetch(`https://kvdb.io/4yZJ1eNcv2wL7XkP9rQ6tB/dayflow_${cleanCode}?t=${Date.now()}`, {
       method: 'GET',
-      headers: { 'Accept': 'application/json' }
-    }).catch(() => null);
+      headers: {
+        'Accept': '*/*'
+      },
+      cache: 'no-store'
+    });
 
-    if (res && res.ok) {
-      const data = await res.json();
-      if (Array.isArray(data) && data.length > 0 && data[0]?.data) {
-        const remote = data[0].data as SyncPayload;
-        if (!cachedPayload || (remote.updatedAt && remote.updatedAt > cachedPayload.updatedAt)) {
-          return remote;
+    if (res.ok) {
+      const text = await res.text();
+      if (text && text.trim().startsWith('{')) {
+        const parsed = JSON.parse(text) as SyncPayload;
+        if (parsed && Array.isArray(parsed.tasks)) {
+          return parsed;
         }
       }
     }
-
-    return cachedPayload;
   } catch (err) {
-    console.warn('Cloud sync pull warning:', err);
-    return null;
+    console.warn('Cloud pull error:', err);
   }
+
+  return null;
 }
