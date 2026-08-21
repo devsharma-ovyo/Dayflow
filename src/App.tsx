@@ -38,12 +38,11 @@ import { HistoryArchiveView } from './components/HistoryArchiveView';
 import { PwaLimitationsModal } from './components/PwaLimitationsModal';
 import { CloudSyncModal } from './components/CloudSyncModal';
 import { 
-  getStoredSyncCode, 
-  getStoredSyncTime,
-  setStoredSyncTime,
-  pushToCloud, 
-  pullFromCloud 
-} from './services/syncService';
+  parseLaunchShortcutData, 
+  getIsHourlySyncEnabled, 
+  getStoredICloudSyncTime, 
+  setStoredICloudSyncTime 
+} from './services/icloudSyncService';
 
 export default function App() {
   // State initialization
@@ -62,7 +61,6 @@ export default function App() {
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
   const [isLimitationsModalOpen, setIsLimitationsModalOpen] = useState(false);
   const [isCloudSyncModalOpen, setIsCloudSyncModalOpen] = useState(false);
-  const [currentSyncCode, setCurrentSyncCode] = useState<string | null>(() => getStoredSyncCode());
 
   // Notification & PWA state
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | 'unsupported'>(() => getNotificationPermission());
@@ -113,72 +111,67 @@ export default function App() {
       });
     }
 
-    // Support instant URL link import (AirDrop / direct link)
-    if (window.location.hash && window.location.hash.includes('importTasks=')) {
-      try {
-        const hashStr = window.location.hash;
-        const encoded = hashStr.split('importTasks=')[1];
-        if (encoded) {
-          const parsed = JSON.parse(decodeURIComponent(encoded));
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            setTasks(parsed);
-            saveTasksToStorage(parsed);
-            setLiveToast({
-              title: 'Tasks Imported!',
-              message: `Loaded ${parsed.length} tasks from your shared link.`
-            });
-            // Clean hash from URL
-            window.history.replaceState(null, '', window.location.pathname);
-          }
+    // Handle Auto-Sync on Launch from Apple Shortcuts or Shared Links
+    const handleLaunchSync = () => {
+      const raw = window.location.hash || window.location.search;
+      if (!raw) return;
+
+      const launchData = parseLaunchShortcutData(raw);
+      if (launchData && Array.isArray(launchData.tasks) && launchData.tasks.length > 0) {
+        setTasks(launchData.tasks);
+        saveTasksToStorage(launchData.tasks);
+        if (launchData.settings) {
+          setSettings((prev) => ({ ...prev, ...launchData.settings }));
+          saveSettingsToStorage({ ...settings, ...launchData.settings });
         }
-      } catch (err) {
-        console.warn('Failed to parse URL import tasks:', err);
+        setLiveToast({
+          title: 'iCloud Synced on Launch',
+          message: `Loaded ${launchData.tasks.length} tasks from your Apple Shortcut.`
+        });
+        // Clean URL hash/search without full page reload
+        window.history.replaceState(null, '', window.location.pathname);
       }
-    }
+    };
+
+    handleLaunchSync();
+    window.addEventListener('hashchange', handleLaunchSync);
+    return () => window.removeEventListener('hashchange', handleLaunchSync);
   }, []);
 
-  // Save tasks to localStorage on change & auto push to cloud if paired
+  // Automated Hourly iCloud Sync Check (checks every hour or on tab re-focus if 1hr passed)
   useEffect(() => {
-    saveTasksToStorage(tasks);
-    if (currentSyncCode && tasks.length > 0) {
-      pushToCloud(currentSyncCode, tasks, settings);
-    }
-  }, [tasks, currentSyncCode]);
+    const checkHourlySync = () => {
+      if (!getIsHourlySyncEnabled()) return;
+      const lastSync = getStoredICloudSyncTime() || 0;
+      const now = Date.now();
+      const oneHourMs = 60 * 60 * 1000;
 
-  // Periodic Cloud Sync Polling (every 3 seconds for real-time MacBook ⇄ iPhone sync)
-  useEffect(() => {
-    if (!currentSyncCode) return;
-
-    let isSubscribed = true;
-    const pollCloud = async () => {
-      const remote = await pullFromCloud(currentSyncCode);
-      if (!isSubscribed) return;
-
-      if (remote && Array.isArray(remote.tasks) && remote.tasks.length > 0) {
-        setTasks((currentTasks) => {
-          // If we currently have 0 tasks, or remote is newer, adopt remote tasks
-          const lastSyncTimestamp = getStoredSyncTime() || 0;
-          if (currentTasks.length === 0 || remote.updatedAt > lastSyncTimestamp) {
-            setStoredSyncTime(remote.updatedAt || Date.now());
-            if (remote.settings) {
-              setSettings((prev) => ({ ...prev, ...remote.settings }));
-            }
-            return remote.tasks;
-          }
-          return currentTasks;
+      // If at least 1 hour has elapsed since last sync snapshot
+      if (now - lastSync >= oneHourMs) {
+        setStoredICloudSyncTime(now);
+        setLiveToast({
+          title: 'Hourly iCloud Sync Ready',
+          message: 'Your tasks are ready for hourly iCloud backup synchronization.'
         });
       }
     };
 
-    // Immediate poll on mount/code change
-    pollCloud();
+    // Run hourly interval (every 1 hour = 3,600,000 ms)
+    const hourlyInterval = setInterval(checkHourlySync, 60 * 60 * 1000);
 
-    const interval = setInterval(pollCloud, 3000);
+    // Also check on window focus (e.g. user unlocks iPhone or wakes MacBook)
+    window.addEventListener('focus', checkHourlySync);
+
     return () => {
-      isSubscribed = false;
-      clearInterval(interval);
+      clearInterval(hourlyInterval);
+      window.removeEventListener('focus', checkHourlySync);
     };
-  }, [currentSyncCode]);
+  }, []);
+
+  // Save tasks to localStorage on change
+  useEffect(() => {
+    saveTasksToStorage(tasks);
+  }, [tasks]);
 
   // Save settings to storage on change
   useEffect(() => {
@@ -498,7 +491,6 @@ export default function App() {
         onOpenStreaksModal={() => setIsStreaksModalOpen(true)}
         onOpenLimitationsModal={() => setIsLimitationsModalOpen(true)}
         onOpenCloudSyncModal={() => setIsCloudSyncModalOpen(true)}
-        currentSyncCode={currentSyncCode}
         installPromptAvailable={!!installPrompt}
         onInstallApp={handleInstallApp}
         isStandalone={isStandalone}
@@ -794,12 +786,12 @@ export default function App() {
         settings={settings}
         onApplyRemoteState={(newTasks, newSettings) => {
           setTasks(newTasks);
+          saveTasksToStorage(newTasks);
           if (newSettings) {
             setSettings((prev) => ({ ...prev, ...newSettings }));
+            saveSettingsToStorage({ ...settings, ...newSettings });
           }
         }}
-        currentSyncCode={currentSyncCode}
-        onSyncCodeChange={(code) => setCurrentSyncCode(code)}
       />
     </div>
   );
