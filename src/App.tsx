@@ -52,7 +52,8 @@ import {
   getStoredOutlookMeetings,
   saveStoredOutlookMeetings,
   syncAllOutlookAccounts,
-  getMeetingsForDate
+  getMeetingsForDate,
+  isDummyDemoMeeting
 } from './services/outlookSyncService';
 
 export default function App() {
@@ -67,7 +68,10 @@ export default function App() {
   
   // Outlook Accounts & Meetings State (Dual Account Support)
   const [outlookAccounts, setOutlookAccounts] = useState<OutlookAccountConfig[]>(() => getStoredOutlookAccounts());
-  const [outlookMeetings, setOutlookMeetings] = useState<OutlookMeeting[]>(() => getStoredOutlookMeetings());
+  const [outlookMeetings, setOutlookMeetings] = useState<OutlookMeeting[]>(() => {
+    const loaded = getStoredOutlookMeetings();
+    return loaded.filter((m) => !isDummyDemoMeeting(m));
+  });
   const [isOutlookAccountsModalOpen, setIsOutlookAccountsModalOpen] = useState(false);
   const [isSyncingOutlook, setIsSyncingOutlook] = useState(false);
 
