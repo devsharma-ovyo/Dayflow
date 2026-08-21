@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Cloud, 
-  RefreshCw, 
+  FolderSync, 
   Copy, 
   Check, 
   Smartphone, 
@@ -14,9 +14,11 @@ import {
   Download,
   Upload,
   FileCode,
-  QrCode,
   Share2,
-  CheckCircle2
+  CheckCircle2,
+  FolderOpen,
+  Save,
+  HelpCircle
 } from 'lucide-react';
 import { 
   generateSyncCode, 
@@ -25,9 +27,9 @@ import {
   setStoredSyncCode, 
   getStoredSyncTime, 
   pushToCloud, 
-  pullFromCloud,
-  SyncPayload 
+  pullFromCloud 
 } from '../services/syncService';
+import { saveToICloudDrive, openFromICloudDrive, ICloudBackup } from '../services/icloudSyncService';
 import { Task, AppSettings } from '../types';
 
 interface CloudSyncModalProps {
@@ -49,7 +51,7 @@ export const CloudSyncModal: React.FC<CloudSyncModalProps> = ({
   currentSyncCode,
   onSyncCodeChange
 }) => {
-  const [activeTab, setActiveTab] = useState<'cloud' | 'json' | 'link'>('cloud');
+  const [activeTab, setActiveTab] = useState<'icloud' | 'cloud' | 'json' | 'link'>('icloud');
   const [inputCode, setInputCode] = useState('');
   const [copied, setCopied] = useState(false);
   const [copiedJson, setCopiedJson] = useState(false);
@@ -59,6 +61,8 @@ export const CloudSyncModal: React.FC<CloudSyncModalProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [lastSyncedTime, setLastSyncedTime] = useState<number | null>(getStoredSyncTime());
   const [pasteJsonText, setPasteJsonText] = useState('');
+  
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -70,7 +74,49 @@ export const CloudSyncModal: React.FC<CloudSyncModalProps> = ({
 
   if (!isOpen) return null;
 
-  // Cloud Sync Handlers
+  // 1. iCloud Drive Handlers
+  const handleSaveToICloud = async () => {
+    setIsSyncing(true);
+    setErrorMsg(null);
+    try {
+      const res = await saveToICloudDrive(tasks, settings);
+      if (res.success) {
+        setSyncSuccessMsg(`Saved "${res.filename}" with ${tasks.length} tasks! Save it inside your iCloud Drive folder.`);
+        setTimeout(() => setSyncSuccessMsg(null), 5000);
+      }
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Failed to save to iCloud Drive.');
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const handleOpenFromICloud = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsSyncing(true);
+    setErrorMsg(null);
+    openFromICloudDrive(file)
+      .then((backup: ICloudBackup) => {
+        if (Array.isArray(backup.tasks) && backup.tasks.length > 0) {
+          onApplyRemoteState(backup.tasks, backup.settings);
+          setSyncSuccessMsg(`Loaded ${backup.tasks.length} tasks from "${file.name}"!`);
+          setTimeout(() => setSyncSuccessMsg(null), 5000);
+        } else {
+          setErrorMsg('The selected file contains 0 tasks.');
+        }
+      })
+      .catch((err) => {
+        setErrorMsg(err.message || 'Could not parse the selected file.');
+      })
+      .finally(() => {
+        setIsSyncing(false);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+      });
+  };
+
+  // 2. Cloud Room Handlers
   const handleGenerateNewSync = async () => {
     setIsSyncing(true);
     setErrorMsg(null);
@@ -107,7 +153,6 @@ export const CloudSyncModal: React.FC<CloudSyncModalProps> = ({
         setLastSyncedTime(remote.updatedAt || Date.now());
         setSyncSuccessMsg(`Connected! Successfully imported ${remote.tasks.length} tasks.`);
       } else {
-        // If remote has no tasks, push our current ones
         await pushToCloud(formatted, tasks, settings);
         setStoredSyncCode(formatted);
         onSyncCodeChange(formatted);
@@ -166,7 +211,7 @@ export const CloudSyncModal: React.FC<CloudSyncModalProps> = ({
     }
   };
 
-  // JSON Direct Transfer Handlers
+  // 3. JSON Handlers
   const handleCopyJson = () => {
     const jsonStr = JSON.stringify(tasks, null, 2);
     navigator.clipboard.writeText(jsonStr);
@@ -194,12 +239,11 @@ export const CloudSyncModal: React.FC<CloudSyncModalProps> = ({
     }
   };
 
-  // Shareable Link Generator
+  // 4. Shareable Link Generator
   const generateDirectShareLink = () => {
     try {
       const payload = encodeURIComponent(JSON.stringify(tasks));
-      const url = `${window.location.origin}${window.location.pathname}#importTasks=${payload}`;
-      return url;
+      return `${window.location.origin}${window.location.pathname}#importTasks=${payload}`;
     } catch {
       return window.location.href;
     }
@@ -239,14 +283,14 @@ export const CloudSyncModal: React.FC<CloudSyncModalProps> = ({
         <div className="flex items-center justify-between px-5 py-4 border-b border-neutral-100 dark:border-neutral-800/80 bg-neutral-50/50 dark:bg-neutral-900/50">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-xl bg-sky-500/10 dark:bg-sky-500/20 text-sky-600 dark:text-sky-400 flex items-center justify-center">
-              <Cloud className="w-4.5 h-4.5" />
+              <FolderSync className="w-4.5 h-4.5" />
             </div>
             <div>
               <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
                 MacBook ⇄ iPhone Sync
               </h2>
               <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
-                Transfer & synchronize tasks across your devices
+                iCloud Drive & Apple Ecosystem Sync
               </p>
             </div>
           </div>
@@ -259,10 +303,34 @@ export const CloudSyncModal: React.FC<CloudSyncModalProps> = ({
         </div>
 
         {/* Navigation Tabs */}
-        <div className="flex border-b border-neutral-200 dark:border-neutral-800 px-5 pt-2 gap-2 bg-neutral-50/30 dark:bg-neutral-900/30">
+        <div className="flex border-b border-neutral-200 dark:border-neutral-800 px-4 pt-2 gap-1 bg-neutral-50/30 dark:bg-neutral-900/30 overflow-x-auto">
+          <button
+            onClick={() => setActiveTab('icloud')}
+            className={`pb-2.5 px-2.5 text-xs font-medium border-b-2 flex items-center gap-1.5 whitespace-nowrap transition-colors ${
+              activeTab === 'icloud'
+                ? 'border-sky-500 text-sky-600 dark:text-sky-400 font-semibold'
+                : 'border-transparent text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
+            }`}
+          >
+            <FolderSync className="w-3.5 h-3.5" />
+            <span>iCloud Drive</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('link')}
+            className={`pb-2.5 px-2.5 text-xs font-medium border-b-2 flex items-center gap-1.5 whitespace-nowrap transition-colors ${
+              activeTab === 'link'
+                ? 'border-sky-500 text-sky-600 dark:text-sky-400 font-semibold'
+                : 'border-transparent text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
+            }`}
+          >
+            <Share2 className="w-3.5 h-3.5" />
+            <span>AirDrop / Link</span>
+          </button>
+
           <button
             onClick={() => setActiveTab('cloud')}
-            className={`pb-2.5 px-2 text-xs font-medium border-b-2 flex items-center gap-1.5 transition-colors ${
+            className={`pb-2.5 px-2.5 text-xs font-medium border-b-2 flex items-center gap-1.5 whitespace-nowrap transition-colors ${
               activeTab === 'cloud'
                 ? 'border-sky-500 text-sky-600 dark:text-sky-400 font-semibold'
                 : 'border-transparent text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
@@ -274,26 +342,14 @@ export const CloudSyncModal: React.FC<CloudSyncModalProps> = ({
 
           <button
             onClick={() => setActiveTab('json')}
-            className={`pb-2.5 px-2 text-xs font-medium border-b-2 flex items-center gap-1.5 transition-colors ${
+            className={`pb-2.5 px-2.5 text-xs font-medium border-b-2 flex items-center gap-1.5 whitespace-nowrap transition-colors ${
               activeTab === 'json'
                 ? 'border-sky-500 text-sky-600 dark:text-sky-400 font-semibold'
                 : 'border-transparent text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
             }`}
           >
             <FileCode className="w-3.5 h-3.5" />
-            <span>Copy / Paste JSON</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('link')}
-            className={`pb-2.5 px-2 text-xs font-medium border-b-2 flex items-center gap-1.5 transition-colors ${
-              activeTab === 'link'
-                ? 'border-sky-500 text-sky-600 dark:text-sky-400 font-semibold'
-                : 'border-transparent text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
-            }`}
-          >
-            <Share2 className="w-3.5 h-3.5" />
-            <span>AirDrop / Link</span>
+            <span>JSON</span>
           </button>
         </div>
 
@@ -314,7 +370,117 @@ export const CloudSyncModal: React.FC<CloudSyncModalProps> = ({
             </div>
           )}
 
-          {/* TAB 1: CLOUD CODE PAIRING */}
+          {/* TAB: ICLOUD DRIVE SYNC (Option A) */}
+          {activeTab === 'icloud' && (
+            <div className="space-y-4">
+              <div className="p-3.5 bg-sky-500/5 dark:bg-sky-500/10 border border-sky-500/20 rounded-xl space-y-1.5">
+                <div className="flex items-center gap-2 text-sky-700 dark:text-sky-300 font-semibold text-xs">
+                  <FolderSync className="w-4 h-4" />
+                  <span>Native Apple iCloud Drive Sync</span>
+                </div>
+                <p className="text-[11px] text-neutral-600 dark:text-neutral-400 leading-relaxed">
+                  Save your tasks to your <strong>iCloud Drive</strong> on Mac, and open them instantly from the <strong>Files App</strong> on your iPhone. 100% private to your Apple ID.
+                </p>
+              </div>
+
+              {/* Hidden File Input for Reading from iCloud Drive */}
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleOpenFromICloud}
+                accept=".json,application/json"
+                className="hidden"
+              />
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* Save to iCloud */}
+                <div className="p-4 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-800/30 flex flex-col justify-between space-y-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <Laptop className="w-4 h-4 text-neutral-600 dark:text-neutral-300" />
+                      <h4 className="text-xs font-semibold text-neutral-900 dark:text-neutral-100">
+                        1. On MacBook
+                      </h4>
+                    </div>
+                    <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-1">
+                      Save current {tasks.length} tasks directly to your iCloud Drive folder.
+                    </p>
+                  </div>
+
+                  <button
+                    onClick={handleSaveToICloud}
+                    disabled={isSyncing}
+                    className="w-full py-2.5 px-3 bg-sky-500 hover:bg-sky-600 text-white rounded-lg text-xs font-medium flex items-center justify-center gap-2 shadow-xs transition-all active:scale-98 disabled:opacity-50"
+                  >
+                    <Save className="w-3.5 h-3.5" />
+                    <span>Save to iCloud Drive</span>
+                  </button>
+                </div>
+
+                {/* Open from iCloud */}
+                <div className="p-4 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-800/30 flex flex-col justify-between space-y-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <Smartphone className="w-4 h-4 text-neutral-600 dark:text-neutral-300" />
+                      <h4 className="text-xs font-semibold text-neutral-900 dark:text-neutral-100">
+                        2. On iPhone
+                      </h4>
+                    </div>
+                    <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-1">
+                      Select <code>DayFlow_Tasks.json</code> from your iPhone <strong>Files &gt; iCloud Drive</strong>.
+                    </p>
+                  </div>
+
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isSyncing}
+                    className="w-full py-2.5 px-3 bg-neutral-900 hover:bg-neutral-800 dark:bg-white dark:hover:bg-neutral-100 text-white dark:text-neutral-900 rounded-lg text-xs font-medium flex items-center justify-center gap-2 shadow-xs transition-all active:scale-98 disabled:opacity-50"
+                  >
+                    <FolderOpen className="w-3.5 h-3.5" />
+                    <span>Open from Files / iCloud</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* How it works simple guide */}
+              <div className="p-3 rounded-xl bg-neutral-100 dark:bg-neutral-800/50 text-[11px] text-neutral-600 dark:text-neutral-400 space-y-1">
+                <div className="font-semibold text-neutral-800 dark:text-neutral-200 flex items-center gap-1.5">
+                  <HelpCircle className="w-3.5 h-3.5 text-sky-500" />
+                  <span>How Apple iCloud Sync Works:</span>
+                </div>
+                <p>
+                  Apple automatically synchronizes all files inside your <strong>iCloud Drive</strong> across all your Macs, iPhones, and iPads in the background. Whenever you update tasks on Mac, save the file to iCloud, and it will be waiting on your iPhone!
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* TAB: AIRDROP / DIRECT LINK */}
+          {activeTab === 'link' && (
+            <div className="space-y-4">
+              <div className="p-4 rounded-xl border border-sky-500/20 bg-sky-500/5 dark:bg-sky-500/10 space-y-3 text-center">
+                <Share2 className="w-6 h-6 text-sky-500 mx-auto" />
+                <div>
+                  <h3 className="text-xs font-semibold text-neutral-900 dark:text-neutral-100">
+                    AirDrop / One-Tap Shared Link
+                  </h3>
+                  <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-1 max-w-xs mx-auto">
+                    Creates a link containing your {tasks.length} tasks. AirDrop or message this link to your iPhone, tap it, and DayFlow will automatically import all tasks!
+                  </p>
+                </div>
+
+                <button
+                  onClick={handleCopyDirectLink}
+                  className="w-full py-2.5 px-4 bg-sky-500 hover:bg-sky-600 text-white text-xs font-medium rounded-xl flex items-center justify-center gap-2 shadow-xs transition-all active:scale-98"
+                >
+                  {copiedLink ? <Check className="w-4 h-4 text-white" /> : <Copy className="w-4 h-4" />}
+                  <span>{copiedLink ? 'Link Copied to Clipboard!' : 'Copy Direct AirDrop Link'}</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* TAB: CLOUD CODE PAIRING */}
           {activeTab === 'cloud' && (
             <div className="space-y-4">
               {currentSyncCode ? (
@@ -440,11 +606,11 @@ export const CloudSyncModal: React.FC<CloudSyncModalProps> = ({
             </div>
           )}
 
-          {/* TAB 2: COPY / PASTE JSON (100% Guaranteed 2-Second Transfer) */}
+          {/* TAB: COPY / PASTE JSON */}
           {activeTab === 'json' && (
             <div className="space-y-4">
               <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-amber-800 dark:text-amber-300 text-xs">
-                💡 <strong>Instant 2-Second Transfer</strong>: If you just want to get your MacBook tasks onto iPhone immediately without any network code, copy the JSON below and paste it on your iPhone!
+                💡 <strong>Instant 2-Second Transfer</strong>: If you just want to get your MacBook tasks onto iPhone immediately, copy the JSON below and paste it on your iPhone!
               </div>
 
               {/* Step 1: Copy on Mac */}
@@ -490,35 +656,10 @@ export const CloudSyncModal: React.FC<CloudSyncModalProps> = ({
             </div>
           )}
 
-          {/* TAB 3: AIRDROP / ONE-TAP LINK */}
-          {activeTab === 'link' && (
-            <div className="space-y-4">
-              <div className="p-4 rounded-xl border border-sky-500/20 bg-sky-500/5 dark:bg-sky-500/10 space-y-3 text-center">
-                <Share2 className="w-6 h-6 text-sky-500 mx-auto" />
-                <div>
-                  <h3 className="text-xs font-semibold text-neutral-900 dark:text-neutral-100">
-                    AirDrop / Direct Link Preload
-                  </h3>
-                  <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-1 max-w-xs mx-auto">
-                    Generate a single URL link that bundles your current {tasks.length} tasks. AirDrop or message this link to your iPhone, open it in Safari, and it will load all tasks immediately!
-                  </p>
-                </div>
-
-                <button
-                  onClick={handleCopyDirectLink}
-                  className="w-full py-2.5 px-4 bg-sky-500 hover:bg-sky-600 text-white text-xs font-medium rounded-xl flex items-center justify-center gap-2 shadow-xs transition-all active:scale-98"
-                >
-                  {copiedLink ? <Check className="w-4 h-4 text-white" /> : <Copy className="w-4 h-4" />}
-                  <span>{copiedLink ? 'Link Copied to Clipboard!' : 'Copy Direct AirDrop Link'}</span>
-                </button>
-              </div>
-            </div>
-          )}
-
           {/* Footer Note */}
           <div className="flex items-center justify-center gap-2 text-[10px] text-neutral-400 dark:text-neutral-500 pt-1">
             <ShieldCheck className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-            <span>All task data is private to your devices. Zero third-party telemetry.</span>
+            <span>All task data is private to your Apple devices. Zero third-party telemetry.</span>
           </div>
         </div>
       </div>
