@@ -58,6 +58,13 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+
+  // New Filters based on user requirements:
+  // 1. Hide all-day meetings (default: true)
+  // 2. Hide past / already completed meetings for today (default: true)
+  const [hideAllDay, setHideAllDay] = useState<boolean>(true);
+  const [hidePastMeetings, setHidePastMeetings] = useState<boolean>(true);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const isToday = (date: Date) => {
@@ -111,36 +118,57 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
 
   const weekDays = generateWeekDays();
 
-  // Get meetings for the selected date
-  const dayMeetings = getMeetingsForDate(meetings, selectedDate);
+  // Get raw meetings for the selected date
+  const rawDayMeetings = getMeetingsForDate(meetings, selectedDate);
 
-  // Filter all meetings by account & search query
+  const now = new Date();
+
+  // Filter day meetings according to hideAllDay, hidePastMeetings, filterAccountId, and searchQuery
+  const filteredDayMeetings = rawDayMeetings.filter((m) => {
+    // Filter out all-day meetings if enabled
+    if (hideAllDay && m.allDay) return false;
+
+    // Filter out past/done meetings if on today
+    if (hidePastMeetings && isToday(selectedDate)) {
+      const end = new Date(m.end || m.start);
+      if (end.getTime() < now.getTime()) {
+        return false;
+      }
+    }
+
+    if (filterAccountId !== 'all' && m.accountId !== filterAccountId) return false;
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      const matchTitle = m.title.toLowerCase().includes(q);
+      const matchOrg = (m.organizer || '').toLowerCase().includes(q);
+      const matchLoc = (m.location || '').toLowerCase().includes(q);
+      if (!matchTitle && !matchOrg && !matchLoc) return false;
+    }
+    return true;
+  });
+
+  // Filter all meetings for all view
   const allFilteredMeetings = meetings.filter((m) => {
+    if (hideAllDay && m.allDay) return false;
     if (filterAccountId !== 'all' && m.accountId !== filterAccountId) return false;
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       const matchTitle = m.title.toLowerCase().includes(q);
-      const matchDesc = (m.description || '').toLowerCase().includes(q);
       const matchOrg = (m.organizer || '').toLowerCase().includes(q);
       const matchLoc = (m.location || '').toLowerCase().includes(q);
-      if (!matchTitle && !matchDesc && !matchOrg && !matchLoc) return false;
+      if (!matchTitle && !matchOrg && !matchLoc) return false;
     }
     return true;
   });
 
-  // Filtered day meetings
-  const filteredDayMeetings = dayMeetings.filter((m) => {
-    if (filterAccountId !== 'all' && m.accountId !== filterAccountId) return false;
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      const matchTitle = m.title.toLowerCase().includes(q);
-      const matchDesc = (m.description || '').toLowerCase().includes(q);
-      const matchOrg = (m.organizer || '').toLowerCase().includes(q);
-      const matchLoc = (m.location || '').toLowerCase().includes(q);
-      if (!matchTitle && !matchDesc && !matchOrg && !matchLoc) return false;
-    }
-    return true;
-  });
+  // Count past meetings on selected day (if today)
+  const pastMeetingsCountToday = rawDayMeetings.filter((m) => {
+    if (m.allDay) return false;
+    const end = new Date(m.end || m.start);
+    return isToday(selectedDate) && end.getTime() < now.getTime();
+  }).length;
+
+  const allDayMeetingsCountToday = rawDayMeetings.filter((m) => m.allDay).length;
 
   // Unique days with meetings
   const uniqueDatesWithMeetings = new Set(
@@ -182,18 +210,18 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
   }, [allFilteredMeetings]);
 
   // Calculate meeting stats for this day
-  const totalTodayCount = getMeetingsForDate(meetings, new Date()).length;
-  const totalDayCount = dayMeetings.length;
+  const totalTodayCount = rawDayMeetings.length;
+  const totalVisibleDayCount = filteredDayMeetings.length;
   
   // Counts per account
   const accountStats = accounts.map((acc) => {
     const count = meetings.filter((m) => m.accountId === acc.id).length;
-    const dayCount = dayMeetings.filter((m) => m.accountId === acc.id).length;
+    const dayCount = filteredDayMeetings.filter((m) => m.accountId === acc.id).length;
     return { ...acc, count, dayCount };
   });
 
   // Total scheduled duration in minutes for day
-  const totalDurationMinutes = dayMeetings.reduce((acc, m) => {
+  const totalDurationMinutes = filteredDayMeetings.reduce((acc, m) => {
     const start = new Date(m.start).getTime();
     const end = new Date(m.end).getTime();
     const diff = Math.max(0, Math.round((end - start) / (1000 * 60)));
@@ -235,9 +263,7 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
   };
 
   // Check if a meeting is currently happening or coming up next
-  const now = new Date();
-  const currentOrNextMeeting = dayMeetings.find((m) => {
-    const s = new Date(m.start);
+  const currentOrNextMeeting = filteredDayMeetings.find((m) => {
     const e = new Date(m.end);
     return isToday(selectedDate) && e.getTime() >= now.getTime();
   });
@@ -406,13 +432,6 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
             </div>
           )}
         </div>
-
-        {/* Agenda / Description Preview */}
-        {meeting.description && (
-          <p className="text-[11px] text-neutral-600 dark:text-neutral-400 line-clamp-2 bg-neutral-50 dark:bg-neutral-800/40 p-2 rounded-lg font-sans leading-relaxed">
-            {meeting.description}
-          </p>
-        )}
       </div>
     );
   };
@@ -645,14 +664,14 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
           {/* Total Meetings Count */}
           <div className="p-3.5 rounded-xl bg-linear-to-br from-sky-500/10 via-sky-500/5 to-indigo-500/10 border border-sky-500/20 flex flex-col justify-between">
             <span className="text-[11px] font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider">
-              {viewMode === 'day' ? 'Meetings Selected Day' : 'Total In Calendar'}
+              {viewMode === 'day' ? (isToday(selectedDate) && hidePastMeetings ? "Today's Remaining" : 'Meetings Visible') : 'Total In Calendar'}
             </span>
             <div className="flex items-baseline gap-2 mt-1">
               <span className="text-2xl font-bold text-neutral-900 dark:text-white font-mono">
-                {viewMode === 'day' ? totalDayCount : meetings.length}
+                {viewMode === 'day' ? totalVisibleDayCount : allFilteredMeetings.length}
               </span>
               <span className="text-xs text-neutral-500 dark:text-neutral-400">
-                {viewMode === 'day' ? `(${meetings.length} total across all dates)` : `across ${uniqueDatesWithMeetings.size} days`}
+                {viewMode === 'day' ? (totalTodayCount !== totalVisibleDayCount ? `(${totalTodayCount} total)` : 'events') : `across ${uniqueDatesWithMeetings.size} days`}
               </span>
             </div>
           </div>
@@ -747,41 +766,81 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
         )}
       </div>
 
-      {/* Filter Tabs & Search */}
-      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5">
-        {/* Account Filter Chips */}
-        <div className="flex items-center gap-1.5 p-1 rounded-xl bg-neutral-200/70 dark:bg-neutral-900 border border-neutral-300/50 dark:border-neutral-800 text-xs overflow-x-auto select-none">
-          <button
-            onClick={() => setFilterAccountId('all')}
-            className={`px-3 py-1.5 rounded-lg font-medium transition-all cursor-pointer whitespace-nowrap ${
-              filterAccountId === 'all'
-                ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white shadow-xs'
-                : 'text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100'
-            }`}
-          >
-            All Accounts ({viewMode === 'day' ? totalDayCount : meetings.length})
-          </button>
+      {/* Filter Tabs, Toggles & Search */}
+      <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5">
+        {/* Account Filter Chips & Quick Toggles */}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Account Filter Chips */}
+          <div className="flex items-center gap-1.5 p-1 rounded-xl bg-neutral-200/70 dark:bg-neutral-900 border border-neutral-300/50 dark:border-neutral-800 text-xs overflow-x-auto select-none">
+            <button
+              onClick={() => setFilterAccountId('all')}
+              className={`px-3 py-1.5 rounded-lg font-medium transition-all cursor-pointer whitespace-nowrap ${
+                filterAccountId === 'all'
+                  ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white shadow-xs'
+                  : 'text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100'
+              }`}
+            >
+              All Accounts ({viewMode === 'day' ? totalVisibleDayCount : allFilteredMeetings.length})
+            </button>
 
-          {accounts.map((acc) => {
-            const count = viewMode === 'day'
-              ? dayMeetings.filter((m) => m.accountId === acc.id).length
-              : meetings.filter((m) => m.accountId === acc.id).length;
-            return (
+            {accounts.map((acc) => {
+              const count = viewMode === 'day'
+                ? filteredDayMeetings.filter((m) => m.accountId === acc.id).length
+                : allFilteredMeetings.filter((m) => m.accountId === acc.id).length;
+              return (
+                <button
+                  key={acc.id}
+                  onClick={() => setFilterAccountId(acc.id)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-medium transition-all cursor-pointer whitespace-nowrap ${
+                    filterAccountId === acc.id
+                      ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white shadow-xs'
+                      : 'text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100'
+                  }`}
+                >
+                  <span className={`w-2 h-2 rounded-full bg-${acc.color}-500`} />
+                  <span>{acc.name}</span>
+                  <span className="text-[10px] opacity-70">({count})</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Quick Filter Toggles (Hide All-Day & Hide Done Meetings) */}
+          <div className="flex items-center gap-1.5 bg-neutral-100 dark:bg-neutral-900/80 p-1 rounded-xl border border-neutral-200 dark:border-neutral-800 text-xs">
+            <button
+              type="button"
+              onClick={() => setHideAllDay(!hideAllDay)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all cursor-pointer text-[11px] font-medium ${
+                hideAllDay
+                  ? 'bg-sky-500/15 text-sky-600 dark:text-sky-400 font-semibold border border-sky-500/30'
+                  : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
+              }`}
+              title="Toggle all-day meetings on or off"
+            >
+              <span>Hide All-Day</span>
+              {allDayMeetingsCountToday > 0 && (
+                <span className="text-[10px] opacity-75 font-mono">({allDayMeetingsCountToday})</span>
+              )}
+            </button>
+
+            {isToday(selectedDate) && (
               <button
-                key={acc.id}
-                onClick={() => setFilterAccountId(acc.id)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-medium transition-all cursor-pointer whitespace-nowrap ${
-                  filterAccountId === acc.id
-                    ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white shadow-xs'
-                    : 'text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100'
+                type="button"
+                onClick={() => setHidePastMeetings(!hidePastMeetings)}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all cursor-pointer text-[11px] font-medium ${
+                  hidePastMeetings
+                    ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-semibold border border-emerald-500/30'
+                    : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
                 }`}
+                title="Filter out meetings that have already ended today"
               >
-                <span className={`w-2 h-2 rounded-full bg-${acc.color}-500`} />
-                <span>{acc.name}</span>
-                <span className="text-[10px] opacity-70">({count})</span>
+                <span>Hide Completed</span>
+                {pastMeetingsCountToday > 0 && (
+                  <span className="text-[10px] opacity-75 font-mono">({pastMeetingsCountToday} past)</span>
+                )}
               </button>
-            );
-          })}
+            )}
+          </div>
         </div>
 
         {/* Quick Search */}
@@ -789,7 +848,7 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
           type="text"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Filter meetings by title, organizer, agenda..."
+          placeholder="Filter meetings by title or organizer..."
           className="px-3 py-1.5 rounded-xl text-xs bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-hidden focus:ring-1 focus:ring-sky-500 shadow-2xs"
         />
       </div>
@@ -936,7 +995,7 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
       {viewMode === 'day' && (
         <div className="space-y-4">
           {/* Subtle Tip if there are more meetings on other dates */}
-          {meetings.length > dayMeetings.length && (
+          {meetings.length > rawDayMeetings.length && (
             <div className="flex items-center justify-between p-2.5 rounded-xl bg-neutral-100/70 dark:bg-neutral-800/50 border border-neutral-200/60 dark:border-neutral-700/50 text-xs text-neutral-600 dark:text-neutral-300">
               <span>
                 Showing <strong>{filteredDayMeetings.length}</strong> {filteredDayMeetings.length === 1 ? 'meeting' : 'meetings'} for {isToday(selectedDate) ? 'today' : selectedDate.toLocaleDateString([], { month: 'short', day: 'numeric' })} (<strong>{meetings.length}</strong> total meetings in calendar).
