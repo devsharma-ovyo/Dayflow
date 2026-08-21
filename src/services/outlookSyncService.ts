@@ -180,9 +180,9 @@ export function parseICS(
     rrule?: string;
   } = {};
 
+  const nowMs = Date.now();
   const today = new Date();
-  const pastWindow = new Date(today.getTime() - 60 * 24 * 60 * 60 * 1000);
-  const futureWindow = new Date(today.getTime() + 180 * 24 * 60 * 60 * 1000);
+  const futureWindow = new Date(today.getTime() + 60 * 24 * 60 * 60 * 1000);
 
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i];
@@ -216,36 +216,38 @@ export function parseICS(
           endDate = new Date(startDate.getTime() + durationMs);
         }
 
-        const rawNotes = currentEvent.description || '';
         const rawLoc = currentEvent.location || '';
+        const rawNotes = currentEvent.description || '';
         const detectedUrl = currentEvent.meetingUrl || extractMeetingUrl(rawNotes) || extractMeetingUrl(rawLoc);
         const baseTitle = currentEvent.title || 'Untitled Meeting';
         const baseUid = currentEvent.uid || `evt-${eventCounter}-${startDate.getTime()}`;
 
-        // Unique ID for this specific event occurrence (never collide with master series UID)
+        // Unique ID for this specific event occurrence
         const eventId = `${accountId}-${baseUid}-${startDate.getTime()}-${eventCounter}`;
 
-        // Add base event
-        meetings.push({
-          id: eventId,
-          uid: baseUid,
-          accountId,
-          accountName,
-          accountColor,
-          title: baseTitle,
-          description: rawNotes,
-          location: rawLoc,
-          meetingUrl: detectedUrl,
-          start: startDate.toISOString(),
-          end: endDate.toISOString(),
-          allDay,
-          organizer: currentEvent.organizer,
-          attendees: currentEvent.attendees,
-          status: currentEvent.status || 'confirmed',
-        });
+        // Add base event ONLY if NOT all-day AND NOT in the past
+        if (!allDay && endDate.getTime() >= nowMs) {
+          meetings.push({
+            id: eventId,
+            uid: baseUid,
+            accountId,
+            accountName,
+            accountColor,
+            title: baseTitle,
+            description: '',
+            location: rawLoc,
+            meetingUrl: detectedUrl,
+            start: startDate.toISOString(),
+            end: endDate.toISOString(),
+            allDay: false,
+            organizer: currentEvent.organizer,
+            attendees: currentEvent.attendees,
+            status: currentEvent.status || 'confirmed',
+          });
+        }
 
         // Expand recurring rules (RRULE) for weekly/daily/monthly events
-        if (currentEvent.rrule) {
+        if (currentEvent.rrule && !allDay) {
           const rruleUpper = currentEvent.rrule.toUpperCase();
           
           // Parse interval
@@ -258,11 +260,11 @@ export function parseICS(
           const maxTargetDate = untilDate < futureWindow ? untilDate : futureWindow;
 
           if (rruleUpper.includes('FREQ=DAILY')) {
-            for (let d = 1; d <= 90; d += interval) {
+            for (let d = 1; d <= 60; d += interval) {
               const occStart = new Date(startDate.getTime() + d * 24 * 60 * 60 * 1000);
               const occEnd = new Date(occStart.getTime() + durationMs);
               if (occStart > maxTargetDate) break;
-              if (occStart >= pastWindow && occStart <= futureWindow) {
+              if (occEnd.getTime() >= nowMs && occStart <= futureWindow) {
                 meetings.push({
                   id: `${accountId}-${baseUid}-daily-${d}-${occStart.getTime()}`,
                   uid: `${baseUid}-daily-${d}`,
@@ -270,12 +272,12 @@ export function parseICS(
                   accountName,
                   accountColor,
                   title: baseTitle,
-                  description: rawNotes,
+                  description: '',
                   location: rawLoc,
                   meetingUrl: detectedUrl,
                   start: occStart.toISOString(),
                   end: occEnd.toISOString(),
-                  allDay,
+                  allDay: false,
                   organizer: currentEvent.organizer,
                   attendees: currentEvent.attendees,
                   status: currentEvent.status || 'confirmed',
@@ -288,7 +290,7 @@ export function parseICS(
               const dayCodes: Record<string, number> = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
               const targetDays = byDayMatch[1].split(',').map((d) => dayCodes[d.trim()]).filter((d) => d !== undefined);
 
-              for (let w = 0; w <= 16; w += interval) {
+              for (let w = 0; w <= 12; w += interval) {
                 for (const targetDay of targetDays) {
                   const weekStart = new Date(startDate.getTime() + w * 7 * 24 * 60 * 60 * 1000);
                   const dayDiff = targetDay - weekStart.getDay();
@@ -297,7 +299,7 @@ export function parseICS(
                   const occEnd = new Date(occStart.getTime() + durationMs);
 
                   if (occStart > maxTargetDate) continue;
-                  if (occStart >= pastWindow && occStart <= futureWindow && occStart.getTime() !== startDate.getTime()) {
+                  if (occEnd.getTime() >= nowMs && occStart <= futureWindow && occStart.getTime() !== startDate.getTime()) {
                     meetings.push({
                       id: `${accountId}-${baseUid}-w${w}-d${targetDay}-${occStart.getTime()}`,
                       uid: `${baseUid}-w${w}-d${targetDay}`,
@@ -305,12 +307,12 @@ export function parseICS(
                       accountName,
                       accountColor,
                       title: baseTitle,
-                      description: rawNotes,
+                      description: '',
                       location: rawLoc,
                       meetingUrl: detectedUrl,
                       start: occStart.toISOString(),
                       end: occEnd.toISOString(),
-                      allDay,
+                      allDay: false,
                       organizer: currentEvent.organizer,
                       attendees: currentEvent.attendees,
                       status: currentEvent.status || 'confirmed',
@@ -319,11 +321,11 @@ export function parseICS(
                 }
               }
             } else {
-              for (let w = 1; w <= 16; w += interval) {
+              for (let w = 1; w <= 12; w += interval) {
                 const occStart = new Date(startDate.getTime() + w * 7 * 24 * 60 * 60 * 1000);
                 const occEnd = new Date(occStart.getTime() + durationMs);
                 if (occStart > maxTargetDate) break;
-                if (occStart >= pastWindow && occStart <= futureWindow) {
+                if (occEnd.getTime() >= nowMs && occStart <= futureWindow) {
                   meetings.push({
                     id: `${accountId}-${baseUid}-wk-${w}-${occStart.getTime()}`,
                     uid: `${baseUid}-wk-${w}`,
@@ -331,12 +333,12 @@ export function parseICS(
                     accountName,
                     accountColor,
                     title: baseTitle,
-                    description: rawNotes,
+                    description: '',
                     location: rawLoc,
                     meetingUrl: detectedUrl,
                     start: occStart.toISOString(),
                     end: occEnd.toISOString(),
-                    allDay,
+                    allDay: false,
                     organizer: currentEvent.organizer,
                     attendees: currentEvent.attendees,
                     status: currentEvent.status || 'confirmed',
@@ -345,12 +347,12 @@ export function parseICS(
               }
             }
           } else if (rruleUpper.includes('FREQ=MONTHLY')) {
-            for (let m = 1; m <= 6; m += interval) {
+            for (let m = 1; m <= 3; m += interval) {
               const occStart = new Date(startDate);
               occStart.setMonth(occStart.getMonth() + m);
               const occEnd = new Date(occStart.getTime() + durationMs);
               if (occStart > maxTargetDate) break;
-              if (occStart >= pastWindow && occStart <= futureWindow) {
+              if (occEnd.getTime() >= nowMs && occStart <= futureWindow) {
                 meetings.push({
                   id: `${accountId}-${baseUid}-mo-${m}-${occStart.getTime()}`,
                   uid: `${baseUid}-mo-${m}`,
@@ -358,12 +360,12 @@ export function parseICS(
                   accountName,
                   accountColor,
                   title: baseTitle,
-                  description: rawNotes,
+                  description: '',
                   location: rawLoc,
                   meetingUrl: detectedUrl,
                   start: occStart.toISOString(),
                   end: occEnd.toISOString(),
-                  allDay,
+                  allDay: false,
                   organizer: currentEvent.organizer,
                   attendees: currentEvent.attendees,
                   status: currentEvent.status || 'confirmed',
@@ -477,8 +479,15 @@ export function getStoredOutlookMeetings(): OutlookMeeting[] {
     }
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
-      // Filter out any unwanted dummy/demo meetings
-      const realMeetings = parsed.filter((m) => !isDummyDemoMeeting(m));
+      const nowMs = Date.now();
+      // Filter out unwanted dummy/demo meetings, all-day meetings, and past meetings
+      const realMeetings = parsed.filter((m) => {
+        if (!m || isDummyDemoMeeting(m)) return false;
+        if (m.allDay) return false;
+        const endMs = new Date(m.end || m.start).getTime();
+        if (endMs < nowMs) return false;
+        return true;
+      });
       return realMeetings;
     }
   } catch (err) {
@@ -489,8 +498,15 @@ export function getStoredOutlookMeetings(): OutlookMeeting[] {
 
 export function saveStoredOutlookMeetings(meetings: OutlookMeeting[]): void {
   try {
-    // Ensure no dummy meetings are saved
-    const cleanMeetings = (meetings || []).filter((m) => !isDummyDemoMeeting(m));
+    const nowMs = Date.now();
+    // Ensure no dummy meetings, all-day meetings, or past meetings are saved
+    const cleanMeetings = (meetings || []).filter((m) => {
+      if (!m || isDummyDemoMeeting(m)) return false;
+      if (m.allDay) return false;
+      const endMs = new Date(m.end || m.start).getTime();
+      if (endMs < nowMs) return false;
+      return true;
+    });
     localStorage.setItem(OUTLOOK_MEETINGS_STORAGE_KEY, JSON.stringify(cleanMeetings));
   } catch (err) {
     console.warn('Failed to save outlook meetings to storage:', err);
