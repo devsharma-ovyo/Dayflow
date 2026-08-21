@@ -11,7 +11,8 @@ import {
   Info, 
   Flame, 
   Archive,
-  Plus
+  Plus,
+  Cloud
 } from 'lucide-react';
 import { AppSettings, Task } from '../types';
 
@@ -24,6 +25,8 @@ interface MacTitleBarProps {
   onOpenHistoryModal: () => void;
   onOpenStreaksModal: () => void;
   onOpenLimitationsModal: () => void;
+  onOpenCloudSyncModal: () => void;
+  currentSyncCode: string | null;
   installPromptAvailable: boolean;
   onInstallApp: () => void;
   isStandalone: boolean;
@@ -39,6 +42,8 @@ export const MacTitleBar: React.FC<MacTitleBarProps> = ({
   onOpenHistoryModal,
   onOpenStreaksModal,
   onOpenLimitationsModal,
+  onOpenCloudSyncModal,
+  currentSyncCode,
   installPromptAvailable,
   onInstallApp,
   isStandalone,
@@ -57,47 +62,16 @@ export const MacTitleBar: React.FC<MacTitleBarProps> = ({
 
   return (
     <header id="mac-titlebar" className="sticky top-0 z-30 flex items-center justify-between px-4 py-2.5 bg-white/80 dark:bg-neutral-900/80 backdrop-blur-xl border-b border-neutral-200/70 dark:border-neutral-800/80 transition-colors select-none">
-      {/* Left: macOS Traffic Lights + App Brand */}
-      <div className="flex items-center gap-3">
-        <div className="flex items-center gap-2 group">
-          <button
-            id="traffic-close-btn"
-            title="Reset active filters"
-            className="w-3 h-3 rounded-full bg-rose-500 hover:bg-rose-600 border border-rose-600/30 transition-transform active:scale-90 flex items-center justify-center cursor-pointer shadow-xs"
-            onClick={() => window.location.reload()}
-          >
-            <span className="text-[7px] text-rose-950 font-bold opacity-0 group-hover:opacity-100 transition-opacity">✕</span>
-          </button>
-          <button
-            id="traffic-min-btn"
-            title="Toggle compact list view"
-            className="w-3 h-3 rounded-full bg-amber-500 hover:bg-amber-600 border border-amber-600/30 transition-transform active:scale-90 flex items-center justify-center cursor-pointer shadow-xs"
-            onClick={() => onUpdateSettings({ compactView: !settings.compactView })}
-          >
-            <span className="text-[8px] text-amber-950 font-bold opacity-0 group-hover:opacity-100 transition-opacity">−</span>
-          </button>
-          <button
-            id="traffic-max-btn"
-            title="Quick new task"
-            className="w-3 h-3 rounded-full bg-emerald-500 hover:bg-emerald-600 border border-emerald-600/30 transition-transform active:scale-90 flex items-center justify-center cursor-pointer shadow-xs"
-            onClick={onOpenNewTaskModal}
-          >
-            <span className="text-[7px] text-emerald-950 font-bold opacity-0 group-hover:opacity-100 transition-opacity">+</span>
-          </button>
+      {/* Left: App Brand & Edition */}
+      <div className="flex items-center gap-2.5">
+        <div className="w-7 h-7 rounded-lg bg-linear-to-br from-sky-500 to-indigo-600 flex items-center justify-center text-white shadow-xs">
+          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="m5 12 5 5L20 7" />
+          </svg>
         </div>
-
-        <div className="h-4 w-px bg-neutral-300 dark:bg-neutral-800 mx-1" />
-
-        <div className="flex items-center gap-2">
-          <div className="w-6 h-6 rounded-lg bg-linear-to-br from-sky-500 to-indigo-600 flex items-center justify-center text-white shadow-xs">
-            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="m5 12 5 5L20 7" />
-            </svg>
-          </div>
-          <div className="flex items-baseline gap-1.5">
-            <span className="text-sm font-semibold tracking-tight text-neutral-900 dark:text-neutral-100 font-sans">DayFlow</span>
-            <span className="text-[11px] font-medium text-neutral-400 dark:text-neutral-500 hidden sm:inline">macOS Edition</span>
-          </div>
+        <div className="flex items-baseline gap-1.5">
+          <span className="text-sm font-semibold tracking-tight text-neutral-900 dark:text-neutral-100 font-sans">DayFlow</span>
+          <span className="text-[11px] font-medium text-neutral-400 dark:text-neutral-500 hidden sm:inline">Tasks & Habits</span>
         </div>
       </div>
 
@@ -118,8 +92,28 @@ export const MacTitleBar: React.FC<MacTitleBarProps> = ({
         </div>
       </div>
 
-      {/* Right: Actions (Theme, Chime, Notifications, Dock Install, History) */}
+      {/* Right: Actions (Cloud Sync, New Task, Audio, Notifications, Theme) */}
       <div className="flex items-center gap-1.5">
+        {/* Cloud Sync Button */}
+        <button
+          id="btn-cloud-sync"
+          onClick={onOpenCloudSyncModal}
+          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+            currentSyncCode
+              ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20'
+              : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-700'
+          }`}
+          title={currentSyncCode ? `Cloud Sync Active: ${currentSyncCode}` : 'Sync with iPhone / Mac'}
+        >
+          <Cloud className={`w-3.5 h-3.5 ${currentSyncCode ? 'text-emerald-500' : 'text-neutral-500'}`} />
+          <span className="hidden sm:inline">
+            {currentSyncCode ? currentSyncCode : 'Cloud Sync'}
+          </span>
+          {currentSyncCode && (
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+          )}
+        </button>
+
         {/* Quick New Task Button */}
         <button
           id="btn-quick-new-task"
@@ -208,3 +202,4 @@ export const MacTitleBar: React.FC<MacTitleBarProps> = ({
     </header>
   );
 };
+

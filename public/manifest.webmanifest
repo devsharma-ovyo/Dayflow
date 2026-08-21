@@ -2,8 +2,8 @@
   "name": "DayFlow Personal Task Manager",
   "short_name": "DayFlow",
   "description": "macOS-inspired personal task management with automated recurring resets, streaks, and reminders.",
-  "start_url": "/",
-  "id": "/",
+  "start_url": "./",
+  "id": "./",
   "display": "standalone",
   "background_color": "#0f172a",
   "theme_color": "#0f172a",
@@ -11,13 +11,13 @@
   "categories": ["productivity", "utilities"],
   "icons": [
     {
-      "src": "/icon-192.svg",
+      "src": "./icon-192.svg",
       "sizes": "192x192",
       "type": "image/svg+xml",
       "purpose": "any maskable"
     },
     {
-      "src": "/icon-512.svg",
+      "src": "./icon-512.svg",
       "sizes": "512x512",
       "type": "image/svg+xml",
       "purpose": "any maskable"
@@ -26,12 +26,12 @@
   "shortcuts": [
     {
       "name": "New Task",
-      "url": "/?action=new",
+      "url": "./?action=new",
       "description": "Quickly create a new task in DayFlow"
     },
     {
       "name": "Daily Habits",
-      "url": "/?view=daily",
+      "url": "./?view=daily",
       "description": "View today's recurring habits"
     }
   ]
