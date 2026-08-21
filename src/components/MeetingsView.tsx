@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { 
   Calendar as CalendarIcon, 
   Clock, 
@@ -18,16 +18,25 @@ import {
   Smartphone,
   Sparkles,
   CalendarCheck,
-  AlertCircle
+  AlertCircle,
+  Upload
 } from 'lucide-react';
 import { OutlookAccountConfig, OutlookMeeting, Task } from '../types';
-import { getMeetingsForDate, convertMeetingToTask } from '../services/outlookSyncService';
+import { 
+  getMeetingsForDate, 
+  convertMeetingToTask, 
+  parseICS, 
+  saveStoredOutlookMeetings, 
+  getStoredOutlookMeetings,
+  generateSampleDemoMeetings
+} from '../services/outlookSyncService';
 
 interface MeetingsViewProps {
   meetings: OutlookMeeting[];
   accounts: OutlookAccountConfig[];
   onOpenAccountsModal: () => void;
   onRefreshMeetings: () => Promise<void>;
+  onImportMeetings: (meetings: OutlookMeeting[], message?: string) => void;
   isSyncing: boolean;
   onAddTask: (task: Task) => void;
 }
@@ -37,6 +46,7 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
   accounts,
   onOpenAccountsModal,
   onRefreshMeetings,
+  onImportMeetings,
   isSyncing,
   onAddTask,
 }) => {
@@ -44,6 +54,8 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
   const [addedTaskIds, setAddedTaskIds] = useState<Set<string>>(new Set());
   const [filterAccountId, setFilterAccountId] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [uploadStatus, setUploadStatus] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const isToday = (date: Date) => {
     const today = new Date();
@@ -146,8 +158,49 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
     return isToday(selectedDate) && e.getTime() >= now.getTime();
   });
 
+  const handleDirectFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const icsText = event.target?.result as string;
+      if (icsText) {
+        // Default to work-outlook or first account
+        const targetAcc = accounts[0] || { id: 'work-outlook', name: 'Work Outlook', color: 'sky' };
+        const parsed = parseICS(icsText, targetAcc.id, targetAcc.name, targetAcc.color);
+        if (parsed.length === 0) {
+          setUploadStatus(`No meetings found in "${file.name}". Please check the file.`);
+          return;
+        }
+
+        const currentStored = getStoredOutlookMeetings();
+        const otherAcc = currentStored.filter((m) => m.accountId !== targetAcc.id);
+        const combined = [...otherAcc, ...parsed].sort(
+          (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
+        );
+
+        saveStoredOutlookMeetings(combined);
+        onImportMeetings(combined, `Imported ${parsed.length} meetings from ${file.name}`);
+        setUploadStatus(`Imported ${parsed.length} meetings from ${file.name}`);
+        setTimeout(() => setUploadStatus(null), 4000);
+      }
+    };
+    reader.readAsText(file);
+    if (e.target) e.target.value = '';
+  };
+
   return (
     <div id="meetings-view-container" className="space-y-5 animate-in fade-in duration-200">
+      {/* Hidden file input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".ics,text/calendar"
+        onChange={handleDirectFileUpload}
+        className="hidden"
+      />
+
       {/* Top Header & Daily Overview Banner */}
       <div className="p-5 rounded-2xl bg-white dark:bg-neutral-900 border border-neutral-200/80 dark:border-neutral-800 shadow-xs space-y-4">
         {/* Date Selector Navigation & Controls */}
@@ -196,25 +249,41 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
           </div>
 
           {/* Sync & Account Setup Actions */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center flex-wrap gap-2">
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-200 transition-colors shadow-2xs active:scale-95 cursor-pointer"
+              title="Upload your downloaded .ics calendar file"
+            >
+              <Upload className="w-3.5 h-3.5 text-sky-500" />
+              <span>Import .ics File</span>
+            </button>
+
             <button
               onClick={onRefreshMeetings}
               disabled={isSyncing}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-200 transition-colors shadow-2xs active:scale-95 disabled:opacity-50"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-200 transition-colors shadow-2xs active:scale-95 disabled:opacity-50 cursor-pointer"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin text-sky-500' : 'text-neutral-500'}`} />
-              <span>{isSyncing ? 'Syncing Outlook...' : 'Sync Outlook'}</span>
+              <span>{isSyncing ? 'Syncing...' : 'Sync Feeds'}</span>
             </button>
 
             <button
               onClick={onOpenAccountsModal}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium bg-sky-500 hover:bg-sky-600 text-white transition-all shadow-xs active:scale-95"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium bg-sky-500 hover:bg-sky-600 text-white transition-all shadow-xs active:scale-95 cursor-pointer"
             >
               <Settings className="w-3.5 h-3.5" />
               <span>Manage 2 Accounts</span>
             </button>
           </div>
         </div>
+
+        {uploadStatus && (
+          <div className="p-2.5 rounded-xl bg-sky-500/10 border border-sky-500/20 text-xs text-sky-700 dark:text-sky-300 flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 shrink-0 text-sky-500" />
+            <span>{uploadStatus}</span>
+          </div>
+        )}
 
         {/* Prominent Daily Meeting Count & Account Breakdown Stats */}
         <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 pt-1">
@@ -373,18 +442,32 @@ export const MeetingsView: React.FC<MeetingsViewProps> = ({
           </h3>
           <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 max-w-sm">
             {accounts.every((a) => !a.feedUrl.trim())
-              ? 'Connect your 2 Outlook accounts or load demo meetings to sync your calendar.'
+              ? 'Connect your 2 Outlook accounts or reload sample pre-loaded meetings to preview DayFlow.'
               : 'Your calendar is completely open. Focus on deep work or tasks!'}
           </p>
-          {accounts.every((a) => !a.feedUrl.trim()) && (
+          <div className="flex items-center gap-2 mt-4">
             <button
-              onClick={onOpenAccountsModal}
-              className="mt-4 flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-sky-500 hover:bg-sky-600 text-white shadow-xs active:scale-95 transition-all cursor-pointer"
+              onClick={() => {
+                const sample = generateSampleDemoMeetings();
+                saveStoredOutlookMeetings(sample);
+                onImportMeetings(sample, 'Loaded sample Outlook meetings');
+              }}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-800 dark:text-neutral-200 transition-all shadow-2xs active:scale-95 cursor-pointer"
             >
-              <Settings className="w-4 h-4" />
-              <span>Connect Outlook Calendars</span>
+              <Sparkles className="w-3.5 h-3.5 text-sky-500" />
+              <span>Load Sample Meetings</span>
             </button>
-          )}
+
+            {accounts.every((a) => !a.feedUrl.trim()) && (
+              <button
+                onClick={onOpenAccountsModal}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-sky-500 hover:bg-sky-600 text-white shadow-xs active:scale-95 transition-all cursor-pointer"
+              >
+                <Settings className="w-4 h-4" />
+                <span>Connect Outlook</span>
+              </button>
+            )}
+          </div>
         </div>
       ) : (
         <div className="space-y-3">
