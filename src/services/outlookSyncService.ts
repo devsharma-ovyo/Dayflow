@@ -115,8 +115,8 @@ export function parseICS(
   // Unfold folded lines (RFC 5545: lines starting with space or tab continue the previous line)
   const unfolded = icsContent
     .replace(/\r\n[ \t]/g, '')
-    .replace(/\r[ \t]/g, '')
-    .replace(/\n[ \t]/g, '');
+    .replace(/\n[ \t]/g, '')
+    .replace(/\r[ \t]/g, '');
   const lines = unfolded.split(/\r\n|\n|\r/);
 
   let inEvent = false;
@@ -127,8 +127,8 @@ export function parseICS(
   } = {};
 
   const today = new Date();
-  const pastWindow = new Date(today.getTime() - 14 * 24 * 60 * 60 * 1000);
-  const futureWindow = new Date(today.getTime() + 60 * 24 * 60 * 60 * 1000);
+  const pastWindow = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const futureWindow = new Date(today.getTime() + 90 * 24 * 60 * 60 * 1000);
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
@@ -184,14 +184,25 @@ export function parseICS(
           status: currentEvent.status || 'confirmed'
         });
 
-        // Expand recurring rules (RRULE) for weekly/daily events to cover current dates
+        // Expand recurring rules (RRULE) for weekly/daily/monthly events
         if (currentEvent.rrule) {
           const rruleUpper = currentEvent.rrule.toUpperCase();
+          
+          // Parse interval
+          const intervalMatch = rruleUpper.match(/INTERVAL=(\d+)/);
+          const interval = intervalMatch ? Math.max(1, parseInt(intervalMatch[1], 10)) : 1;
+
+          // Parse UNTIL if specified
+          const untilMatch = rruleUpper.match(/UNTIL=([^;]+)/);
+          const untilDate = untilMatch ? parseIcsDate(untilMatch[1]).date : futureWindow;
+          const maxTargetDate = untilDate < futureWindow ? untilDate : futureWindow;
+
           if (rruleUpper.includes('FREQ=DAILY')) {
-            // Repeat daily for next 30 days
-            for (let d = 1; d <= 30; d++) {
+            // Repeat daily for up to 60 occurrences
+            for (let d = 1; d <= 60; d += interval) {
               const occStart = new Date(startDate.getTime() + d * 24 * 60 * 60 * 1000);
               const occEnd = new Date(occStart.getTime() + durationMs);
+              if (occStart > maxTargetDate) break;
               if (occStart >= pastWindow && occStart <= futureWindow) {
                 meetings.push({
                   id: `${accountId}-${baseUid}-daily-${d}`,
@@ -213,14 +224,82 @@ export function parseICS(
               }
             }
           } else if (rruleUpper.includes('FREQ=WEEKLY')) {
-            // Repeat weekly for next 8 weeks
-            for (let w = 1; w <= 8; w++) {
-              const occStart = new Date(startDate.getTime() + w * 7 * 24 * 60 * 60 * 1000);
+            // Check if BYDAY is specified (e.g. BYDAY=MO,TU,WE,TH,FR)
+            const byDayMatch = rruleUpper.match(/BYDAY=([^;]+)/);
+            if (byDayMatch) {
+              const dayCodes: Record<string, number> = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
+              const targetDays = byDayMatch[1].split(',').map((d) => dayCodes[d.trim()]).filter((d) => d !== undefined);
+
+              // Generate for next 12 weeks
+              for (let w = 0; w <= 12; w += interval) {
+                for (const targetDay of targetDays) {
+                  const weekStart = new Date(startDate.getTime() + w * 7 * 24 * 60 * 60 * 1000);
+                  const dayDiff = targetDay - weekStart.getDay();
+                  const occStart = new Date(weekStart.getTime() + dayDiff * 24 * 60 * 60 * 1000);
+                  // preserve start hours/minutes
+                  occStart.setHours(startDate.getHours(), startDate.getMinutes(), startDate.getSeconds());
+                  const occEnd = new Date(occStart.getTime() + durationMs);
+
+                  if (occStart > maxTargetDate) continue;
+                  if (occStart >= pastWindow && occStart <= futureWindow && occStart.getTime() !== startDate.getTime()) {
+                    meetings.push({
+                      id: `${accountId}-${baseUid}-w${w}-d${targetDay}`,
+                      uid: `${baseUid}-w${w}-d${targetDay}`,
+                      accountId,
+                      accountName,
+                      accountColor,
+                      title: baseTitle,
+                      description: rawNotes,
+                      location: rawLoc,
+                      meetingUrl: detectedUrl,
+                      start: occStart.toISOString(),
+                      end: occEnd.toISOString(),
+                      allDay,
+                      organizer: currentEvent.organizer,
+                      attendees: currentEvent.attendees,
+                      status: currentEvent.status || 'confirmed'
+                    });
+                  }
+                }
+              }
+            } else {
+              // Standard weekly repeat
+              for (let w = 1; w <= 12; w += interval) {
+                const occStart = new Date(startDate.getTime() + w * 7 * 24 * 60 * 60 * 1000);
+                const occEnd = new Date(occStart.getTime() + durationMs);
+                if (occStart > maxTargetDate) break;
+                if (occStart >= pastWindow && occStart <= futureWindow) {
+                  meetings.push({
+                    id: `${accountId}-${baseUid}-wk-${w}`,
+                    uid: `${baseUid}-wk-${w}`,
+                    accountId,
+                    accountName,
+                    accountColor,
+                    title: baseTitle,
+                    description: rawNotes,
+                    location: rawLoc,
+                    meetingUrl: detectedUrl,
+                    start: occStart.toISOString(),
+                    end: occEnd.toISOString(),
+                    allDay,
+                    organizer: currentEvent.organizer,
+                    attendees: currentEvent.attendees,
+                    status: currentEvent.status || 'confirmed'
+                  });
+                }
+              }
+            }
+          } else if (rruleUpper.includes('FREQ=MONTHLY')) {
+            // Monthly recurrence
+            for (let m = 1; m <= 6; m += interval) {
+              const occStart = new Date(startDate);
+              occStart.setMonth(occStart.getMonth() + m);
               const occEnd = new Date(occStart.getTime() + durationMs);
+              if (occStart > maxTargetDate) break;
               if (occStart >= pastWindow && occStart <= futureWindow) {
                 meetings.push({
-                  id: `${accountId}-${baseUid}-wk-${w}`,
-                  uid: `${baseUid}-wk-${w}`,
+                  id: `${accountId}-${baseUid}-mo-${m}`,
+                  uid: `${baseUid}-mo-${m}`,
                   accountId,
                   accountName,
                   accountColor,
@@ -505,17 +584,13 @@ export function convertMeetingToTask(meeting: OutlookMeeting): Task {
  * Filter meetings for a specific date (defaults to today)
  */
 export function getMeetingsForDate(meetings: OutlookMeeting[], targetDate: Date = new Date()): OutlookMeeting[] {
-  const targetYear = targetDate.getFullYear();
-  const targetMonth = targetDate.getMonth();
-  const targetDay = targetDate.getDate();
+  const startOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 0, 0, 0, 0);
+  const endOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 23, 59, 59, 999);
 
   return meetings.filter((m) => {
-    const mDate = new Date(m.start);
-    return (
-      mDate.getFullYear() === targetYear &&
-      mDate.getMonth() === targetMonth &&
-      mDate.getDate() === targetDay
-    );
+    const mStart = new Date(m.start);
+    const mEnd = new Date(m.end || m.start);
+    return mStart <= endOfDay && mEnd >= startOfDay;
   });
 }
 
