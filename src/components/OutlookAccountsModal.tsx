@@ -16,12 +16,13 @@ import {
   Link,
   Laptop
 } from 'lucide-react';
-import { OutlookAccountConfig } from '../types';
+import { OutlookAccountConfig, OutlookMeeting } from '../types';
 import { 
   syncOutlookAccount, 
   parseICS, 
   generateSampleDemoMeetings, 
-  saveStoredOutlookMeetings 
+  saveStoredOutlookMeetings,
+  getStoredOutlookMeetings 
 } from '../services/outlookSyncService';
 
 interface OutlookAccountsModalProps {
@@ -30,6 +31,7 @@ interface OutlookAccountsModalProps {
   accounts: OutlookAccountConfig[];
   onUpdateAccounts: (accounts: OutlookAccountConfig[]) => void;
   onRefreshMeetings: () => Promise<void>;
+  onImportMeetings: (meetings: OutlookMeeting[], message?: string) => void;
 }
 
 export const OutlookAccountsModal: React.FC<OutlookAccountsModalProps> = ({
@@ -38,6 +40,7 @@ export const OutlookAccountsModal: React.FC<OutlookAccountsModalProps> = ({
   accounts,
   onUpdateAccounts,
   onRefreshMeetings,
+  onImportMeetings,
 }) => {
   const [editingAccounts, setEditingAccounts] = useState<OutlookAccountConfig[]>(accounts);
   const [testingId, setTestingId] = useState<string | null>(null);
@@ -70,7 +73,7 @@ export const OutlookAccountsModal: React.FC<OutlookAccountsModalProps> = ({
     }
 
     setTestingId(account.id);
-    setTestResult((prev) => ({ ...prev, [account.id]: { success: true, msg: 'Connecting...' } }));
+    setTestResult((prev) => ({ ...prev, [account.id]: { success: true, msg: 'Connecting to Outlook...' } }));
 
     const res = await syncOutlookAccount(account);
     setTestingId(null);
@@ -83,6 +86,12 @@ export const OutlookAccountsModal: React.FC<OutlookAccountsModalProps> = ({
           msg: `Successfully connected! Found ${res.meetings.length} events.`,
         },
       }));
+      // Merge test results into storage
+      const currentStored = getStoredOutlookMeetings();
+      const otherAcc = currentStored.filter((m) => m.accountId !== account.id);
+      const combined = [...otherAcc, ...res.meetings];
+      saveStoredOutlookMeetings(combined);
+      onImportMeetings(combined, `Connected to ${account.name}! Found ${res.meetings.length} events.`);
     } else {
       setTestResult((prev) => ({
         ...prev,
@@ -110,18 +119,36 @@ export const OutlookAccountsModal: React.FC<OutlookAccountsModalProps> = ({
     reader.onload = (event) => {
       const icsText = event.target?.result as string;
       if (icsText) {
-        const targetAcc = editingAccounts.find((a) => a.id === accountId);
+        const targetAcc = editingAccounts.find((a) => a.id === accountId) || editingAccounts[0];
         if (targetAcc) {
           const parsed = parseICS(icsText, targetAcc.id, targetAcc.name, targetAcc.color);
+          if (parsed.length === 0) {
+            setTestResult((prev) => ({
+              ...prev,
+              [accountId]: {
+                success: false,
+                msg: `Could not find any calendar events in "${file.name}". Please ensure it is a valid .ics file.`,
+              },
+            }));
+            return;
+          }
+
+          // Merge with meetings from other accounts
+          const currentStored = getStoredOutlookMeetings();
+          const otherAccountsMeetings = currentStored.filter((m) => m.accountId !== targetAcc.id);
+          const combined = [...otherAccountsMeetings, ...parsed].sort(
+            (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()
+          );
+
+          saveStoredOutlookMeetings(combined);
+          onImportMeetings(combined, `Imported ${parsed.length} meetings from ${file.name}`);
           setTestResult((prev) => ({
             ...prev,
             [accountId]: {
               success: true,
-              msg: `Imported ${parsed.length} meetings from ${file.name}!`,
+              msg: `Imported ${parsed.length} meetings successfully!`,
             },
           }));
-          saveStoredOutlookMeetings(parsed);
-          onRefreshMeetings();
         }
       }
     };
@@ -131,7 +158,7 @@ export const OutlookAccountsModal: React.FC<OutlookAccountsModalProps> = ({
   const handleLoadSampleDemo = () => {
     const sampleMeetings = generateSampleDemoMeetings();
     saveStoredOutlookMeetings(sampleMeetings);
-    onRefreshMeetings();
+    onImportMeetings(sampleMeetings, 'Loaded demo Work & Personal schedule');
     setTestResult({
       'work-outlook': { success: true, msg: 'Demo Work meetings loaded!' },
       'personal-outlook': { success: true, msg: 'Demo Personal meetings loaded!' },
