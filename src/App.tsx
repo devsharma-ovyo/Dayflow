@@ -36,6 +36,12 @@ import { TaskFormModal } from './components/TaskFormModal';
 import { StreakStatsModal } from './components/StreakStatsModal';
 import { HistoryArchiveView } from './components/HistoryArchiveView';
 import { PwaLimitationsModal } from './components/PwaLimitationsModal';
+import { CloudSyncModal } from './components/CloudSyncModal';
+import { 
+  getStoredSyncCode, 
+  pushToCloud, 
+  pullFromCloud 
+} from './services/syncService';
 
 export default function App() {
   // State initialization
@@ -53,6 +59,8 @@ export default function App() {
   const [isStreaksModalOpen, setIsStreaksModalOpen] = useState(false);
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
   const [isLimitationsModalOpen, setIsLimitationsModalOpen] = useState(false);
+  const [isCloudSyncModalOpen, setIsCloudSyncModalOpen] = useState(false);
+  const [currentSyncCode, setCurrentSyncCode] = useState<string | null>(() => getStoredSyncCode());
 
   // Notification & PWA state
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | 'unsupported'>(() => getNotificationPermission());
@@ -104,10 +112,35 @@ export default function App() {
     }
   }, []);
 
-  // Save tasks to localStorage on change
+  // Save tasks to localStorage on change & auto push to cloud if paired
   useEffect(() => {
     saveTasksToStorage(tasks);
-  }, [tasks]);
+    if (currentSyncCode) {
+      pushToCloud(currentSyncCode, tasks, settings);
+    }
+  }, [tasks, currentSyncCode]);
+
+  // Periodic Cloud Sync Polling (every 10 seconds for real-time MacBook ⇄ iPhone sync)
+  useEffect(() => {
+    if (!currentSyncCode) return;
+
+    const pollCloud = async () => {
+      const remote = await pullFromCloud(currentSyncCode);
+      if (remote && remote.tasks && remote.updatedAt) {
+        const localTasksTime = localStorage.getItem('dayflow_sync_last_time');
+        const localTimeNum = localTasksTime ? parseInt(localTasksTime, 10) : 0;
+        if (remote.updatedAt > localTimeNum + 1000) {
+          setTasks(remote.tasks);
+          if (remote.settings) {
+            setSettings((prev) => ({ ...prev, ...remote.settings }));
+          }
+        }
+      }
+    };
+
+    const interval = setInterval(pollCloud, 10000);
+    return () => clearInterval(interval);
+  }, [currentSyncCode]);
 
   // Save settings to storage on change
   useEffect(() => {
@@ -426,6 +459,8 @@ export default function App() {
         onOpenHistoryModal={() => setIsHistoryModalOpen(true)}
         onOpenStreaksModal={() => setIsStreaksModalOpen(true)}
         onOpenLimitationsModal={() => setIsLimitationsModalOpen(true)}
+        onOpenCloudSyncModal={() => setIsCloudSyncModalOpen(true)}
+        currentSyncCode={currentSyncCode}
         installPromptAvailable={!!installPrompt}
         onInstallApp={handleInstallApp}
         isStandalone={isStandalone}
@@ -712,6 +747,21 @@ export default function App() {
         onRequestNotificationPermission={handleRequestNotifications}
         permissionStatus={notificationPermission}
         isStandalone={isStandalone}
+      />
+
+      <CloudSyncModal
+        isOpen={isCloudSyncModalOpen}
+        onClose={() => setIsCloudSyncModalOpen(false)}
+        tasks={tasks}
+        settings={settings}
+        onApplyRemoteState={(newTasks, newSettings) => {
+          setTasks(newTasks);
+          if (newSettings) {
+            setSettings((prev) => ({ ...prev, ...newSettings }));
+          }
+        }}
+        currentSyncCode={currentSyncCode}
+        onSyncCodeChange={(code) => setCurrentSyncCode(code)}
       />
     </div>
   );
