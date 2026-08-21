@@ -39,6 +39,8 @@ import { PwaLimitationsModal } from './components/PwaLimitationsModal';
 import { CloudSyncModal } from './components/CloudSyncModal';
 import { 
   getStoredSyncCode, 
+  getStoredSyncTime,
+  setStoredSyncTime,
   pushToCloud, 
   pullFromCloud 
 } from './services/syncService';
@@ -110,36 +112,72 @@ export default function App() {
         setNotificationPermission(res);
       });
     }
+
+    // Support instant URL link import (AirDrop / direct link)
+    if (window.location.hash && window.location.hash.includes('importTasks=')) {
+      try {
+        const hashStr = window.location.hash;
+        const encoded = hashStr.split('importTasks=')[1];
+        if (encoded) {
+          const parsed = JSON.parse(decodeURIComponent(encoded));
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setTasks(parsed);
+            saveTasksToStorage(parsed);
+            setLiveToast({
+              title: 'Tasks Imported!',
+              message: `Loaded ${parsed.length} tasks from your shared link.`
+            });
+            // Clean hash from URL
+            window.history.replaceState(null, '', window.location.pathname);
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to parse URL import tasks:', err);
+      }
+    }
   }, []);
 
   // Save tasks to localStorage on change & auto push to cloud if paired
   useEffect(() => {
     saveTasksToStorage(tasks);
-    if (currentSyncCode) {
+    if (currentSyncCode && tasks.length > 0) {
       pushToCloud(currentSyncCode, tasks, settings);
     }
   }, [tasks, currentSyncCode]);
 
-  // Periodic Cloud Sync Polling (every 10 seconds for real-time MacBook ⇄ iPhone sync)
+  // Periodic Cloud Sync Polling (every 3 seconds for real-time MacBook ⇄ iPhone sync)
   useEffect(() => {
     if (!currentSyncCode) return;
 
+    let isSubscribed = true;
     const pollCloud = async () => {
       const remote = await pullFromCloud(currentSyncCode);
-      if (remote && remote.tasks && remote.updatedAt) {
-        const localTasksTime = localStorage.getItem('dayflow_sync_last_time');
-        const localTimeNum = localTasksTime ? parseInt(localTasksTime, 10) : 0;
-        if (remote.updatedAt > localTimeNum + 1000) {
-          setTasks(remote.tasks);
-          if (remote.settings) {
-            setSettings((prev) => ({ ...prev, ...remote.settings }));
+      if (!isSubscribed) return;
+
+      if (remote && Array.isArray(remote.tasks) && remote.tasks.length > 0) {
+        setTasks((currentTasks) => {
+          // If we currently have 0 tasks, or remote is newer, adopt remote tasks
+          const lastSyncTimestamp = getStoredSyncTime() || 0;
+          if (currentTasks.length === 0 || remote.updatedAt > lastSyncTimestamp) {
+            setStoredSyncTime(remote.updatedAt || Date.now());
+            if (remote.settings) {
+              setSettings((prev) => ({ ...prev, ...remote.settings }));
+            }
+            return remote.tasks;
           }
-        }
+          return currentTasks;
+        });
       }
     };
 
-    const interval = setInterval(pollCloud, 10000);
-    return () => clearInterval(interval);
+    // Immediate poll on mount/code change
+    pollCloud();
+
+    const interval = setInterval(pollCloud, 3000);
+    return () => {
+      isSubscribed = false;
+      clearInterval(interval);
+    };
   }, [currentSyncCode]);
 
   // Save settings to storage on change
