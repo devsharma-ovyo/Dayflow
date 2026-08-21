@@ -29,7 +29,7 @@ import {
   pushToCloud, 
   pullFromCloud 
 } from '../services/syncService';
-import { saveToICloudDrive, openFromICloudDrive, ICloudBackup } from '../services/icloudSyncService';
+import { saveToICloudDrive, openFromICloudDrive, ICloudBackup } from '../services/icloudSyncServices';
 import { Task, AppSettings } from '../types';
 
 interface CloudSyncModalProps {
